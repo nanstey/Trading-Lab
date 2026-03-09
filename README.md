@@ -50,11 +50,20 @@ cd Trading-Lab
 
 # 2. Copy and configure environment
 cp .env.example .env
-# Edit .env with your API credentials
+# Edit .env with your API credentials (live trading needs real keys)
 
-# 3. Install dependencies and start paper trading
-make dev
-make paper
+# 3. Preferred: run inside the NautilusTrader Docker image
+docker compose up --build trader
+# Or use the Makefile helpers:
+make docker-build
+make docker-up
+
+# 4. Tail the container logs to confirm paper mode started
+make docker-logs
+
+# Optional (local dev): install deps and run paper trading directly
+# make dev
+# make paper
 ```
 
 ## Trading Venues

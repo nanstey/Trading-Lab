@@ -1,26 +1,28 @@
 # =============================================================================
 # Nautilus-Predict — Task Runner
 # =============================================================================
-# Prerequisites: uv, Python 3.12+, Rust/cargo (for polyfill-rs)
+# Prerequisites: Python 3.12+, Rust/cargo (for polyfill-rs)
+# Docker: NautilusTrader container for paper/live execution
 #
 # Quick start:
-#   make dev       — install all dependencies
+#   make dev       — install all dependencies in your environment
 #   make test      — run full test suite
 #   make paper     — start paper trading (safe, no real orders)
-#   make check-env — validate environment and API connectivity
+#   make docker-up — run paper trading inside the NautilusTrader container
 # =============================================================================
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-PYTHON      := python
-UV          := uv
-SRC         := src/nautilus_predict
-TEST_DIR    := tests
-SCRIPTS     := scripts
-
-# Detect if running in Docker
-IN_DOCKER   := $(shell [ -f /.dockerenv ] && echo "1" || echo "0")
+PYTHON := python3
+PIP := $(PYTHON) -m pip
+RUFF := $(PYTHON) -m ruff
+PYTEST := $(PYTHON) -m pytest
+MYPY := $(PYTHON) -m mypy
+PRE_COMMIT := $(PYTHON) -m pre_commit
+SRC := src/nautilus_predict
+TEST_DIR := tests
+SCRIPTS := scripts
 
 # ---------------------------------------------------------------------------
 # Help
@@ -42,8 +44,7 @@ help:
 	@echo "  make format       Auto-format with ruff"
 	@echo "  make type-check   Run mypy type checker"
 	@echo "  make check        lint + type-check (no auto-fix)"
-	@echo "  make test         Run full test suite with coverage"
-	@echo "  make test-fast    Run tests, skip slow/integration tests"
+	@echo "  make test         Run full test suite with verbose output"
 	@echo ""
 	@echo "Trading:"
 	@echo "  make paper        Start paper trading (live feeds, simulated fills)"
@@ -57,10 +58,11 @@ help:
 	@echo "  make derive-keys  Derive Polymarket L2 API credentials (one-time)"
 	@echo ""
 	@echo "Docker:"
-	@echo "  make docker-build Build Docker image"
+	@echo "  make docker-build Build Docker image using the NautilusTrader base"
 	@echo "  make docker-up    Start Docker container (paper mode)"
 	@echo "  make docker-down  Stop Docker container"
 	@echo "  make docker-logs  Tail container logs"
+	@echo "  make docker-shell Open a shell inside the running container"
 	@echo ""
 	@echo "Maintenance:"
 	@echo "  make clean        Remove build artifacts and caches"
@@ -72,7 +74,7 @@ help:
 
 .PHONY: dev
 dev: ## Install all dependencies including dev tools
-	$(UV) pip install -e ".[dev]"
+	$(PIP) install -e ".[dev]"
 	@echo ""
 	@echo "Installation complete. Next steps:"
 	@echo "  1. cp .env.example .env && edit .env with your credentials"
@@ -81,7 +83,7 @@ dev: ## Install all dependencies including dev tools
 
 .PHONY: install
 install: ## Install production dependencies only
-	$(UV) pip install -e "."
+	$(PIP) install -e "."
 
 .PHONY: rust-build
 rust-build: ## Build polyfill-rs Rust crate
@@ -99,34 +101,34 @@ rust-test: ## Run polyfill-rs Rust tests
 
 .PHONY: lint
 lint: ## Run ruff linter (no auto-fix)
-	$(UV) run ruff check $(SRC) $(TEST_DIR) $(SCRIPTS)
+	$(RUFF) check $(SRC) $(TEST_DIR) $(SCRIPTS)
 
 .PHONY: lint-fix
 lint-fix: ## Run ruff linter with auto-fix
-	$(UV) run ruff check --fix $(SRC) $(TEST_DIR) $(SCRIPTS)
+	$(RUFF) check --fix $(SRC) $(TEST_DIR) $(SCRIPTS)
 
 .PHONY: format
 format: ## Auto-format with ruff
-	$(UV) run ruff format $(SRC) $(TEST_DIR) $(SCRIPTS)
+	$(RUFF) format $(SRC) $(TEST_DIR) $(SCRIPTS)
 
 .PHONY: format-check
 format-check: ## Check formatting without modifying files
-	$(UV) run ruff format --check $(SRC) $(TEST_DIR) $(SCRIPTS)
+	$(RUFF) format --check $(SRC) $(TEST_DIR) $(SCRIPTS)
 
 .PHONY: type-check
 type-check: ## Run mypy type checker
-	$(UV) run mypy $(SRC)
+	$(MYPY) $(SRC)
 
 .PHONY: check
 check: lint format-check type-check ## Run all checks (no auto-fix)
 
 .PHONY: pre-commit-install
 pre-commit-install: ## Install pre-commit hooks into .git/hooks
-	$(UV) run pre-commit install
+	$(PRE_COMMIT) install
 
 .PHONY: pre-commit-run
 pre-commit-run: ## Run pre-commit hooks on all files
-	$(UV) run pre-commit run --all-files
+	$(PRE_COMMIT) run --all-files
 
 # ---------------------------------------------------------------------------
 # Testing
@@ -134,15 +136,15 @@ pre-commit-run: ## Run pre-commit hooks on all files
 
 .PHONY: test
 test: ## Run full test suite with coverage report
-	$(UV) run pytest $(TEST_DIR) -v
+	$(PYTEST) $(TEST_DIR) -v
 
 .PHONY: test-fast
-test-fast: ## Run tests, skip integration/slow tests
-	$(UV) run pytest $(TEST_DIR) -v -m "not integration and not slow"
+test-fast: ## Run tests, skip slow/integration tests
+	$(PYTEST) $(TEST_DIR) -v -m "not integration and not slow"
 
 .PHONY: test-cov
 test-cov: ## Run tests and open HTML coverage report
-	$(UV) run pytest $(TEST_DIR) --cov=$(SRC) --cov-report=html
+	$(PYTEST) $(TEST_DIR) --cov=$(SRC) --cov-report=html
 	@echo "Coverage report: htmlcov/index.html"
 
 # ---------------------------------------------------------------------------

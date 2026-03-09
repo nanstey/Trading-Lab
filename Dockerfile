@@ -1,37 +1,23 @@
-FROM python:3.12-slim AS base
-
-# Build-time dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    git \
-    libssl-dev \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install uv for fast dependency resolution
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ARG NAUTILUSTRADER_IMAGE=ghcr.io/nautechsystems/nautilustrader:latest
+FROM ${NAUTILUSTRADER_IMAGE} AS runtime
 
 WORKDIR /app
 
-# Copy dependency manifest first for layer caching
-COPY pyproject.toml ./
+# Install Python dependencies
+COPY pyproject.toml README.md ./
 COPY src/ ./src/
+RUN python3 -m pip install --upgrade pip setuptools wheel
+RUN python3 -m pip install --no-cache-dir -e ".[dev]"
 
-# Install project (production deps only)
-RUN uv pip install --system --no-cache ".[dev]"
-
-# Runtime stage
-FROM base AS runtime
-
+# Copy remaining repo files
 COPY . .
 
-# Non-root user for security
+# Runtime directories
+RUN mkdir -p /app/logs /app/data/parquet /app/catalog
+
+# Drop privileges
 RUN useradd -m -u 1000 trader && chown -R trader:trader /app
 USER trader
 
-# Create runtime directories
-RUN mkdir -p /app/logs /app/data/parquet /app/catalog
-
-ENTRYPOINT ["python", "-m", "nautilus_predict.main"]
+ENTRYPOINT ["python3", "-m", "nautilus_predict.main"]
 CMD ["--mode", "live"]
