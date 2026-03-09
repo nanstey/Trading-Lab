@@ -1,7 +1,3 @@
-"""
-Nautilus-Predict: Algorithmic trading system for Polymarket and Hyperliquid.
-
-Built on NautilusTrader with a Rust-accelerated critical path.
-"""
+"""Nautilus-Predict: Algorithmic trading for Polymarket and Hyperliquid."""
 
 __version__ = "0.1.0"

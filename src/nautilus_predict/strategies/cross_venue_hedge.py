@@ -1,241 +1,246 @@
 """
-Cross-Venue Hedging Strategy.
+Cross-Venue Hedge Strategy.
 
-Exploits discrepancies between Hyperliquid perpetual prices and crypto-related
-Polymarket prediction markets. When directional bias on Hyperliquid suggests
-an outcome is mispriced on Polymarket (or vice versa), the system opens a
-delta-neutral hedge across both venues.
+Exploits pricing discrepancies between:
+- Hyperliquid perpetual futures (e.g., BTC-PERP)
+- Polymarket binary event contracts (e.g., "Will BTC be above $X on date Y?")
 
-Architecture
-------------
-- Monitors Polymarket YES/NO prices for crypto-linked markets (e.g.
-  "Will BTC close above $100k on Dec 31?").
-- Monitors Hyperliquid perpetual price for the underlying (BTC-PERP).
-- Computes an implied probability from the Hyperliquid price via a
-  log-normal model or percentile lookup.
-- When implied probability diverges from Polymarket probability by more than
-  a threshold, opens:
-    * A directional trade on Hyperliquid (long/short the perp).
-    * An opposing position on Polymarket (buy YES/NO).
-- The hedge unwinds automatically when prices converge or at expiry.
+When Hyperliquid price action diverges from Polymarket event pricing,
+delta-neutral positions can be constructed to profit from convergence.
+
+Example:
+    Hyperliquid BTC-PERP: $65,000 → strongly bullish momentum
+    Polymarket "BTC > $60k by month end": YES ask = 0.60
+
+    If BTC momentum implies YES probability > 0.70,
+    the YES token is mispriced. Strategy:
+    1. Buy YES on Polymarket (underpriced)
+    2. Short BTC-PERP on Hyperliquid (delta hedge)
+    3. Net: long gamma on Polymarket, delta-neutral overall
+
+Hedge ratio:
+    hedge_ratio controls what fraction of Polymarket delta to offset.
+    0.5 = half-hedge (still long BTC delta through Polymarket)
+    1.0 = full delta hedge (pure gamma trade)
+
+entry_threshold_bps:
+    Minimum mispricing in basis points before entering a position.
+    Prevents chasing noise and unnecessary transaction costs.
+
+TODO(live): Implement Hyperliquid price feed subscription
+TODO(live): Implement Hyperliquid order placement
+TODO(live): Develop fair value model for Polymarket event prices
+TODO(live): Calibrate hedge_ratio for each market type
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import NamedTuple
+import logging
+from decimal import Decimal
+from typing import TYPE_CHECKING
 
-import structlog
-from nautilus_trader.config import StrategyConfig
-from nautilus_trader.model.data import OrderBookDeltas, TradeTick
-from nautilus_trader.model.enums import OrderSide, TimeInForce
-from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.objects import Price, Quantity
-from nautilus_trader.trading.strategy import Strategy
+from nautilus_predict.strategies.base import NautilusPredictStrategy
 
-log = structlog.get_logger(__name__)
+if TYPE_CHECKING:
+    from nautilus_trader.model.data import OrderBookDeltas
+    from nautilus_trader.model.events import OrderFilled, PositionChanged
 
+    from nautilus_predict.config import TradingConfig
+    from nautilus_predict.risk.kill_switch import KillSwitch
 
-class HedgePair(NamedTuple):
-    """Pairing of a Polymarket YES instrument with a Hyperliquid perp."""
-
-    condition_id: str
-    pm_yes_instrument_id: InstrumentId     # Polymarket YES token
-    hl_instrument_id: InstrumentId         # Hyperliquid PERP (e.g. BTC-PERP.HYPERLIQUID)
-    strike_price: float                    # The threshold price (e.g. 100_000 for BTC > $100k)
-    expiry_ts_ns: int                      # Market expiry as nanosecond timestamp
+log = logging.getLogger(__name__)
 
 
-@dataclass
-class CrossVenueHedgeConfig(StrategyConfig, frozen=True):
-    """Configuration for the cross-venue hedging strategy."""
-
-    strategy_id: str = "CROSS-VENUE-HEDGE-001"
-    hedge_ratio: float = 0.5            # Fraction of Polymarket exposure hedged on HL
-    min_divergence: float = 0.05        # Minimum probability divergence to trigger hedge (5pp)
-    max_position_usdc: float = 2000.0   # Max total exposure per hedge pair
-    close_on_convergence: float = 0.01  # Close when divergence drops below 1pp
-
-
-class CrossVenueHedgeStrategy(Strategy):
+class CrossVenueHedgeStrategy(NautilusPredictStrategy):
     """
-    Monitors crypto-related Polymarket markets and hedges on Hyperliquid.
+    Cross-venue hedge strategy between Hyperliquid and Polymarket.
+
+    Holds a Polymarket position hedged via Hyperliquid perpetual futures.
+    Profits from mean-reversion of the pricing discrepancy between venues.
+
+    Parameters
+    ----------
+    hl_instrument : str
+        Hyperliquid instrument symbol (e.g., "BTC", "ETH").
+    poly_condition_id : str
+        Polymarket condition ID for the correlated event.
+    poly_yes_token_id : str
+        YES token ID on Polymarket.
+    hedge_ratio : float
+        Fraction of Polymarket delta to hedge on Hyperliquid (0.0 to 1.0).
+    entry_threshold_bps : int
+        Minimum discrepancy in basis points before entering.
+    order_size_usdc : float
+        Position size in USDC for each leg.
+    config : TradingConfig
+        System configuration.
+    kill_switch : KillSwitch, optional
+        Risk management kill switch.
     """
 
-    def __init__(self, config: CrossVenueHedgeConfig) -> None:
-        super().__init__(config)
-        self._cfg = config
-        self._pairs: list[HedgePair] = []
+    def __init__(
+        self,
+        hl_instrument: str,
+        poly_condition_id: str,
+        poly_yes_token_id: str,
+        hedge_ratio: float = 0.5,
+        entry_threshold_bps: int = 100,
+        order_size_usdc: float = 50.0,
+        config: TradingConfig | None = None,
+        kill_switch: KillSwitch | None = None,
+    ) -> None:
+        if config is None:
+            raise ValueError("config must be provided")
+        super().__init__(config=config, kill_switch=kill_switch)
+        self._hl_instrument = hl_instrument
+        self._poly_condition_id = poly_condition_id
+        self._poly_yes_token_id = poly_yes_token_id
+        self._hedge_ratio = hedge_ratio
+        self._entry_threshold_bps = entry_threshold_bps
+        self._order_size_usdc = Decimal(str(order_size_usdc))
 
-        # Latest mid prices
-        self._pm_yes_mids: dict[str, float] = {}     # condition_id → probability
-        self._hl_mids: dict[str, float] = {}         # hl_instrument_id → price
+        # Internal state
+        self._hl_price: Decimal | None = None
+        self._poly_yes_price: Decimal | None = None
+        self._poly_position_usdc: float = 0.0
+        self._hl_position_usdc: float = 0.0
 
-        # Active hedge positions per condition_id
-        self._active_hedges: dict[str, dict] = {}
-
-    def register_pair(self, pair: HedgePair) -> None:
-        """Register a Polymarket/Hyperliquid pair for cross-venue monitoring."""
-        self._pairs.append(pair)
-        self.subscribe_order_book_deltas(pair.pm_yes_instrument_id)
-        self.subscribe_order_book_deltas(pair.hl_instrument_id)
-        log.info(
-            "Registered hedge pair",
-            condition_id=pair.condition_id,
-            pm=str(pair.pm_yes_instrument_id),
-            hl=str(pair.hl_instrument_id),
-            strike=pair.strike_price,
-        )
+    # ------------------------------------------------------------------
+    # Strategy lifecycle
+    # ------------------------------------------------------------------
 
     def on_start(self) -> None:
-        log.info("CrossVenueHedgeStrategy started", pairs=len(self._pairs))
+        """Subscribe to price feeds for both venues."""
+        log.info(
+            "CrossVenueHedge starting",
+            extra={
+                "hl_instrument": self._hl_instrument,
+                "poly_condition": self._poly_condition_id,
+                "hedge_ratio": self._hedge_ratio,
+                "entry_threshold_bps": self._entry_threshold_bps,
+            },
+        )
+        # TODO(live): Subscribe to Hyperliquid price feed for self._hl_instrument
+        # TODO(live): Subscribe to Polymarket order book for self._poly_yes_token_id
 
     def on_stop(self) -> None:
-        log.info("CrossVenueHedgeStrategy stopping")
-        self.cancel_all_orders()
-
-    def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
-        iid = str(deltas.instrument_id)
-        book = self.cache.order_book(deltas.instrument_id)
-        if book is None:
-            return
-
-        bid = book.best_bid_price()
-        ask = book.best_ask_price()
-        if bid is None or ask is None:
-            return
-        mid = (float(bid) + float(ask)) / 2.0
-
-        # Determine which side this update is for
-        for pair in self._pairs:
-            if iid == str(pair.pm_yes_instrument_id):
-                self._pm_yes_mids[pair.condition_id] = mid
-                self._evaluate_pair(pair)
-            elif iid == str(pair.hl_instrument_id):
-                self._hl_mids[iid] = mid
-                self._evaluate_pair(pair)
-
-    def _evaluate_pair(self, pair: HedgePair) -> None:
-        """Check for hedge opportunity or convergence on a given pair."""
-        pm_prob = self._pm_yes_mids.get(pair.condition_id)
-        hl_price = self._hl_mids.get(str(pair.hl_instrument_id))
-        if pm_prob is None or hl_price is None:
-            return
-
-        implied_prob = self._compute_implied_prob(hl_price, pair.strike_price)
-        divergence = implied_prob - pm_prob
-
-        log.debug(
-            "Pair evaluation",
-            condition_id=pair.condition_id,
-            pm_prob=round(pm_prob, 4),
-            implied_prob=round(implied_prob, 4),
-            divergence=round(divergence, 4),
-        )
-
-        # Unwind if convergence reached
-        if pair.condition_id in self._active_hedges:
-            if abs(divergence) < self._cfg.close_on_convergence:
-                self._close_hedge(pair, divergence)
-            return
-
-        # Open new hedge if divergence exceeds threshold
-        if abs(divergence) >= self._cfg.min_divergence:
-            self._open_hedge(pair, pm_prob, implied_prob, divergence)
-
-    def _compute_implied_prob(self, spot_price: float, strike: float) -> float:
-        """
-        Simplified binary option pricing: probability that spot > strike.
-
-        Uses a basic threshold model. For production, replace with a proper
-        log-normal or historical distribution model.
-        """
-        # Simple linear interpolation based on distance from strike
-        ratio = spot_price / strike
-        if ratio >= 1.20:
-            return 0.90
-        elif ratio >= 1.05:
-            return 0.70 + (ratio - 1.05) / 0.15 * 0.20
-        elif ratio >= 0.95:
-            return 0.30 + (ratio - 0.95) / 0.10 * 0.40
-        elif ratio >= 0.80:
-            return 0.10 + (ratio - 0.80) / 0.15 * 0.20
-        else:
-            return 0.10
-
-    def _open_hedge(
-        self,
-        pair: HedgePair,
-        pm_prob: float,
-        implied_prob: float,
-        divergence: float,
-    ) -> None:
-        """Open a delta-neutral cross-venue hedge position."""
-        size_usdc = min(self._cfg.max_position_usdc, 500.0)
-        pm_shares = size_usdc / pm_prob
-        hl_size = size_usdc * self._cfg.hedge_ratio / self._hl_mids.get(
-            str(pair.hl_instrument_id), 1.0
-        )
-
-        # If implied_prob > pm_prob: Polymarket underpricing YES
-        # → Buy YES on Polymarket + short the perp on Hyperliquid (sell if rally stalls)
-        if divergence > 0:
-            pm_side = OrderSide.BUY
-            hl_is_buy = False
-        else:
-            pm_side = OrderSide.SELL
-            hl_is_buy = True
-
-        pm_price = pm_prob if pm_side == OrderSide.BUY else pm_prob
-        hl_price = self._hl_mids[str(pair.hl_instrument_id)]
-
-        pm_order = self.order_factory.limit(
-            instrument_id=pair.pm_yes_instrument_id,
-            order_side=pm_side,
-            quantity=Quantity.from_str(f"{pm_shares:.4f}"),
-            price=Price.from_str(f"{pm_price:.4f}"),
-            time_in_force=TimeInForce.GTC,
-        )
-        hl_order = self.order_factory.limit(
-            instrument_id=pair.hl_instrument_id,
-            order_side=OrderSide.BUY if hl_is_buy else OrderSide.SELL,
-            quantity=Quantity.from_str(f"{hl_size:.6f}"),
-            price=Price.from_str(f"{hl_price:.2f}"),
-            time_in_force=TimeInForce.GTC,
-        )
-
-        self._active_hedges[pair.condition_id] = {
-            "divergence_at_entry": divergence,
-            "pm_order_id": str(pm_order.client_order_id),
-            "hl_order_id": str(hl_order.client_order_id),
-        }
-
-        self.submit_order(pm_order)
-        self.submit_order(hl_order)
-
+        """Close all open positions on strategy stop."""
         log.info(
-            "Hedge opened",
-            condition_id=pair.condition_id,
-            pm_side=pm_side,
-            hl_side="BUY" if hl_is_buy else "SELL",
-            divergence=round(divergence, 4),
+            "CrossVenueHedge stopping, closing positions",
+            extra={
+                "poly_position_usdc": self._poly_position_usdc,
+                "hl_position_usdc": self._hl_position_usdc,
+            },
         )
+        # TODO(live): Close Polymarket position if open
+        # TODO(live): Close Hyperliquid position if open
 
-    def _close_hedge(self, pair: HedgePair, current_divergence: float) -> None:
-        """Unwind the hedge as divergence has converged."""
-        hedge = self._active_hedges.pop(pair.condition_id, None)
-        if hedge is None:
-            return
+    # ------------------------------------------------------------------
+    # Book / price update handlers
+    # ------------------------------------------------------------------
+
+    def on_book_update(self, deltas: OrderBookDeltas) -> None:
+        """
+        Process order book updates from Polymarket.
+
+        Updates the observed YES token price and checks for entry signals.
+        """
+        self._check_kill_switch()
+
+        # TODO(live): Extract mid-price from deltas
+        # self._poly_yes_price = extract_mid_price(deltas)
+
+        self._check_entry_signal()
+
+    def on_hyperliquid_price(self, price: Decimal) -> None:
+        """
+        Process price updates from Hyperliquid.
+
+        Called by the data adapter when a new price tick arrives.
+
+        Parameters
+        ----------
+        price : Decimal
+            Current mid-price of the Hyperliquid instrument in USD.
+        """
+        self._check_kill_switch()
+        self._hl_price = price
+        self._check_entry_signal()
+
+    def on_fill(self, event: OrderFilled) -> None:
+        """Update position tracking when a fill occurs on either venue."""
         log.info(
-            "Hedge converged — unwinding",
-            condition_id=pair.condition_id,
-            divergence_at_entry=round(hedge["divergence_at_entry"], 4),
-            current_divergence=round(current_divergence, 4),
+            "Fill received",
+            extra={
+                "condition_id": self._poly_condition_id,
+                "hl_instrument": self._hl_instrument,
+            },
         )
-        # Cancel resting orders; realised P&L from filled legs is tracked by portfolio
-        self.cancel_all_orders()
+        # TODO(live): Update self._poly_position_usdc or self._hl_position_usdc
 
-    def on_reset(self) -> None:
-        self._active_hedges.clear()
-        self._pm_yes_mids.clear()
-        self._hl_mids.clear()
+    def on_position_changed(self, event: PositionChanged) -> None:
+        """Adjust hedge size when position changes."""
+        log.debug("Position changed")
+        # TODO(live): Recalculate required HL hedge size and adjust if needed
+
+    # ------------------------------------------------------------------
+    # Internal signal logic
+    # ------------------------------------------------------------------
+
+    def _check_entry_signal(self) -> None:
+        """
+        Compare implied probability from Hyperliquid price to Polymarket YES price.
+
+        If discrepancy exceeds entry_threshold_bps, enter a hedged position.
+        """
+        if self._hl_price is None or self._poly_yes_price is None:
+            return
+
+        implied_prob = self._hl_price_to_implied_prob(self._hl_price)
+        if implied_prob is None:
+            return
+
+        # Discrepancy in basis points
+        discrepancy_bps = int(abs(implied_prob - self._poly_yes_price) * 10000)
+
+        if discrepancy_bps >= self._entry_threshold_bps:
+            log.info(
+                "Entry signal",
+                extra={
+                    "hl_implied_prob": float(implied_prob),
+                    "poly_yes_price": float(self._poly_yes_price),
+                    "discrepancy_bps": discrepancy_bps,
+                },
+            )
+            self._enter_hedged_position(implied_prob)
+
+    def _hl_price_to_implied_prob(self, hl_price: Decimal) -> Decimal | None:
+        """
+        Convert a Hyperliquid perpetual price to an implied probability for
+        the associated Polymarket event.
+
+        This requires a calibrated model specific to each event type.
+        For example, for "Will BTC be above $60k on date X?", we might use
+        a lognormal distribution over HL price.
+
+        TODO(live): Implement calibrated probability model per market type
+        """
+        # Stub: no model implemented yet
+        return None
+
+    def _enter_hedged_position(self, implied_prob: Decimal) -> None:
+        """
+        Enter a delta-hedged position across both venues.
+
+        TODO(live): Place Polymarket order for YES if underpriced
+        TODO(live): Place Hyperliquid short for hedge_ratio * delta
+        """
+        log.info(
+            "Entering hedged position",
+            extra={
+                "poly_condition": self._poly_condition_id,
+                "hl_instrument": self._hl_instrument,
+                "hedge_ratio": self._hedge_ratio,
+            },
+        )
+        # TODO(live): Implement dual-venue order placement

@@ -20,7 +20,7 @@ success criteria that must be met before progressing to the next.
 - Document authentication flows
 
 ### Deliverables
-- [x] `nautilus_predict/` package with all modules stubbed
+- [x] `src/nautilus_predict/` package with all modules stubbed
 - [x] `PolymarketAuth` with EIP-712 and HMAC-SHA256 signing
 - [x] `KillSwitch`, `HeartbeatWatcher`, `PositionLimits` risk modules
 - [x] `DataCatalog` with PyArrow/Parquet storage
