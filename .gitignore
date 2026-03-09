@@ -67,12 +67,14 @@ docs/_build/
 *.key
 secrets/
 
-# Data
+# Data — ignore contents but track directory placeholders
 data/raw/
-data/parquet/
+data/parquet/*
+!data/parquet/.gitkeep
 *.parquet
 *.feather
-logs/
+logs/*
+!logs/.gitkeep
 
 # Docker
 docker-compose.override.yml
@@ -93,5 +95,6 @@ target/
 Cargo.lock
 **/*.rs.bk
 
-# NautilusTrader catalog
-catalog/
+# NautilusTrader catalog — ignore contents but track directory placeholder
+catalog/*
+!catalog/.gitkeep

@@ -1,0 +1,50 @@
+# Pre-commit hooks for Nautilus-Predict
+# Install: make pre-commit-install
+# Run manually: make pre-commit-run
+#
+# Hooks run automatically on `git commit`:
+#   1. ruff  — linting and import sorting
+#   2. ruff-format — code formatting
+#   3. Standard safety checks (trailing whitespace, YAML syntax, etc.)
+
+repos:
+  # Ruff: fast Python linter + formatter (replaces flake8, isort, black)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        name: ruff (lint + fix)
+        args: [--fix, --exit-non-zero-on-fix]
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff (format)
+        types_or: [python, pyi]
+
+  # Standard pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: "^(data/|logs/|catalog/)"
+      - id: end-of-file-fixer
+        exclude: "^(data/|logs/|catalog/)"
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      # Safety: never commit .env files (only .env.example is allowed)
+      - id: detect-private-key
+      - id: check-case-conflict
+
+  # Mypy type checking (runs on staged Python files)
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (type check)
+        entry: uv run mypy
+        language: system
+        types: [python]
+        files: ^src/nautilus_predict/
+        pass_filenames: false
+        args: [src/nautilus_predict]
