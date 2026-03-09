@@ -1,0 +1,25 @@
+services:
+  trader:
+    build:
+      context: .
+      target: runtime
+    image: nautilus-predict:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./catalog:/app/catalog
+    environment:
+      - PYTHONUNBUFFERED=1
+    network_mode: host         # minimise network overhead on single VPS
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G

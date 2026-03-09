@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nautilus-predict"
+version = "0.1.0"
+description = "Algorithmic trading system for Polymarket and Hyperliquid using NautilusTrader"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Nautilus Predict" }]
+
+dependencies = [
+    # Core trading engine
+    "nautilus_trader>=1.208.0",
+
+    # Ethereum / Web3 (Polymarket L1 auth, EIP-712, Polygon settlement)
+    "web3>=7.0.0",
+    "eth-account>=0.13.0",
+
+    # HTTP + async WebSocket
+    "aiohttp>=3.10.0",
+    "websockets>=13.0",
+
+    # Config & validation
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+    "python-dotenv>=1.0.0",
+
+    # Data serialization
+    "pyarrow>=17.0.0",
+    "pandas>=2.2.0",
+
+    # Utilities
+    "structlog>=24.4.0",
+    "cryptography>=43.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
+    "pytest-mock>=3.14.0",
+    "mypy>=1.11.0",
+    "ruff>=0.6.0",
+    "pre-commit>=3.8.0",
+]
+
+[project.scripts]
+np-live = "nautilus_predict.main:run_live"
+np-backtest = "nautilus_predict.main:run_backtest"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nautilus_predict"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "--cov=src/nautilus_predict --cov-report=term-missing -q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
