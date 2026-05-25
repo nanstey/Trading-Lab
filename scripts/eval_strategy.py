@@ -154,10 +154,46 @@ def main() -> int:
         (m["max_drawdown_pct"] for m in summary["per_market"]), default=0.0
     )
 
+    # Record the actual strategy params (defaults from the hypothesis's
+    # strategy config). For BinaryArbStrategy, that's `min_profit_usdc` /
+    # `max_capital_usdc` from TradingConfig.arb. For agent-written strategies,
+    # we record their *Config defaults so downstream paper_run.py can pick
+    # the right experiment row.
+    recorded_params: dict = {}
+    if h.strategy_module and h.strategy_config_class:
+        try:
+            import importlib
+            mod = importlib.import_module(h.strategy_module)
+            cfg_cls = getattr(mod, h.strategy_config_class)
+            inst = cfg_cls()
+            full = inst.dict() if hasattr(inst, "dict") else {}
+            allowed = set(getattr(cfg_cls, "__struct_fields__", ()))
+            # Drop NT-base StrategyConfig boilerplate; keep strategy-specific
+            # knobs by excluding common base fields.
+            base = {
+                "strategy_id", "order_id_tag", "use_uuid_client_order_ids",
+                "use_hyphens_in_client_order_ids", "oms_type",
+                "external_order_claims", "manage_contingent_orders",
+                "manage_gtd_expiry", "manage_stop", "market_exit_interval_ms",
+                "market_exit_max_attempts", "market_exit_time_in_force",
+                "market_exit_reduce_only", "log_events", "log_commands",
+                "log_rejected_due_post_only_as_warning",
+            }
+            recorded_params = {
+                k: v for k, v in full.items()
+                if k in allowed and k not in base
+            }
+        except Exception:
+            recorded_params = {}
+    if not recorded_params:
+        recorded_params = {
+            "min_profit_usdc": cfg.arb.min_profit_usdc,
+            "max_capital_usdc": cfg.arb.max_capital_usdc,
+        }
+
     exp_id = lifecycle.record_experiment(
         slug=args.slug,
-        params={"min_profit_usdc": cfg.arb.min_profit_usdc,
-                "max_capital_usdc": cfg.arb.max_capital_usdc},
+        params=recorded_params,
         data_start=args.start,
         data_end=args.end,
         sharpe=float(sharpe),

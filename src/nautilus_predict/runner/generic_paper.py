@@ -204,7 +204,7 @@ class GenericPaperRunner:
         return cls(config=cfg)
 
     def _install_strategy_stubs(self, strategy) -> None:
-        """No-op the subscribe/order-factory bits the strategy expects."""
+        """No-op the subscribe/cancel methods + fake the order factory."""
         noop = lambda *a, **kw: None  # noqa: E731
         for name in (
             "subscribe_order_book_deltas",
@@ -216,6 +216,16 @@ class GenericPaperRunner:
                 object.__setattr__(strategy, name, noop)
             except (AttributeError, TypeError):
                 pass
+        # Strategies build orders via `self.order_factory.limit(...) /
+        # .market(...)`; in this harness there is no engine to attach the
+        # factory, so substitute a fake. `order_factory` is a Cython
+        # property on `Strategy` — patch it on the LEAF subclass so we
+        # don't poison NT's base class for other strategies in the process.
+        cls = type(strategy)
+        if not getattr(cls, "_paper_factory_patched", False):
+            fake = _FakeOrderFactory()
+            cls.order_factory = property(lambda _self, _f=fake: _f)
+            cls._paper_factory_patched = True
 
     def _install_submit_intercepts(self, strategy) -> None:
         """Capture submit_order / cancel_order calls instead of routing to a venue."""
@@ -290,27 +300,103 @@ class GenericPaperRunner:
 
     def _dispatch(self, msg: dict, strategy) -> None:
         ev = msg.get("event_type") or msg.get("type")
-        token_id = msg.get("asset_id") or msg.get("market") or ""
-        if not token_id:
-            return
-        instrument = self._token_to_instrument.get(token_id)
-        if not instrument:
-            return
-
-        if ev in ("book", "price_change"):
+        if ev == "book":
+            # `book` has a single top-level asset_id.
+            token_id = msg.get("asset_id") or ""
+            instrument = self._token_to_instrument.get(token_id)
+            if not instrument:
+                return
             deltas = self._msg_to_deltas(msg, instrument)
             if deltas is not None:
                 try:
                     strategy.on_order_book_deltas(deltas)
                 except Exception as exc:
-                    log.warning("strategy on_order_book_deltas raised: %s", exc)
-        elif ev in ("last_trade_price", "trade"):
-            tick = self._msg_to_trade_tick(msg, instrument)
-            if tick is not None and hasattr(strategy, "on_trade_tick"):
-                try:
-                    strategy.on_trade_tick(tick)
-                except Exception as exc:
-                    log.warning("strategy on_trade_tick raised: %s", exc)
+                    log.warning("on_order_book_deltas raised: %s", exc)
+            if hasattr(strategy, "on_trade_tick"):
+                ltp = msg.get("last_trade_price")
+                if ltp:
+                    tick = self._build_synthetic_tick(
+                        msg, instrument, price_str=ltp, side_str="",
+                    )
+                    if tick is not None:
+                        try:
+                            strategy.on_trade_tick(tick)
+                        except Exception as exc:
+                            log.warning("on_trade_tick raised: %s", exc)
+            return
+
+        if ev == "price_change":
+            # `price_change` has NO top-level asset_id — only inner entries do.
+            # Each entry can be a different leg; dispatch per leg.
+            for entry in msg.get("price_changes") or []:
+                token_id = str(entry.get("asset_id") or "")
+                instrument = self._token_to_instrument.get(token_id)
+                if not instrument:
+                    continue
+                # Per-leg synthetic delta payload — reuse _msg_to_deltas with
+                # a single-entry `changes` field so it constructs one ADD.
+                synth = {
+                    "timestamp": msg.get("timestamp"),
+                    "changes": [
+                        {
+                            "side": entry.get("side"),
+                            "price": entry.get("price"),
+                            "size": entry.get("size"),
+                        }
+                    ],
+                }
+                deltas = self._msg_to_deltas(synth, instrument)
+                if deltas is not None:
+                    try:
+                        strategy.on_order_book_deltas(deltas)
+                    except Exception as exc:
+                        log.warning("on_order_book_deltas raised: %s", exc)
+                if hasattr(strategy, "on_trade_tick"):
+                    tick = self._build_synthetic_tick(
+                        msg, instrument,
+                        price_str=entry.get("price"),
+                        side_str=entry.get("side", ""),
+                    )
+                    if tick is not None:
+                        try:
+                            strategy.on_trade_tick(tick)
+                        except Exception as exc:
+                            log.warning("on_trade_tick raised: %s", exc)
+            return
+
+    def _build_synthetic_tick(self, msg, instrument, price_str, side_str):
+        from nautilus_trader.model.data import TradeTick
+        from nautilus_trader.model.enums import AggressorSide
+        from nautilus_trader.model.identifiers import TradeId
+
+        try:
+            price = float(price_str)
+        except (TypeError, ValueError):
+            return None
+        if price <= 0:
+            return None
+        price = max(0.01, min(0.99, round(price, 2)))
+        try:
+            ts_ms = int(msg.get("timestamp", 0) or 0)
+        except (TypeError, ValueError):
+            ts_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        ts_ns = ts_ms * 1_000_000
+        side_str = (side_str or "").upper()
+        aggressor = (
+            AggressorSide.BUYER if side_str == "BUY"
+            else AggressorSide.SELLER if side_str == "SELL"
+            else AggressorSide.NO_AGGRESSOR
+        )
+        tid = f"SYNTH{ts_ms}"
+        return TradeTick(
+            instrument_id=instrument.id,
+            price=instrument.make_price(price),
+            size=instrument.make_qty(max(float(instrument.min_quantity or 1.0), 1.0)),
+            aggressor_side=aggressor,
+            trade_id=TradeId(tid[:32]),
+            ts_event=ts_ns,
+            ts_init=ts_ns,
+        )
 
     def _msg_to_trade_tick(self, msg: dict, instrument):
         """Convert a `last_trade_price` WS message to a NautilusTrader TradeTick."""
@@ -426,3 +512,53 @@ def _instrument_to_token(iid_str: str, lookup: dict[str, Any]) -> str:
         if str(instr.id) == iid_str:
             return tok
     return iid_str
+
+
+@dataclass
+class _FakeOrder:
+    """Lightweight stand-in for a NT Order object — only the fields the
+    paper runner's submit intercept reads."""
+
+    instrument_id: Any
+    side: Any
+    quantity: Any
+    price: Any
+    client_order_id: str
+    time_in_force: Any = None
+
+
+_FAKE_ORDER_COUNTER = 0
+
+
+class _FakeOrderFactory:
+    """
+    Minimal OrderFactory shim used in `GenericPaperRunner`.
+
+    Only implements `.limit(...)` and `.market(...)` returning a `_FakeOrder`.
+    No engine binding — the runner intercepts `submit_order` and records the
+    intent without touching a real OMS.
+    """
+
+    def _next_id(self) -> str:
+        global _FAKE_ORDER_COUNTER
+        _FAKE_ORDER_COUNTER += 1
+        return f"PAPER-{_FAKE_ORDER_COUNTER:06d}"
+
+    def limit(self, instrument_id, order_side, quantity, price, **kwargs):
+        return _FakeOrder(
+            instrument_id=instrument_id,
+            side=order_side,
+            quantity=quantity,
+            price=price,
+            client_order_id=self._next_id(),
+            time_in_force=kwargs.get("time_in_force"),
+        )
+
+    def market(self, instrument_id, order_side, quantity, **kwargs):
+        return _FakeOrder(
+            instrument_id=instrument_id,
+            side=order_side,
+            quantity=quantity,
+            price=None,
+            client_order_id=self._next_id(),
+        )

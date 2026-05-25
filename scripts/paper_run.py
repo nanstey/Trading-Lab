@@ -81,13 +81,26 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": "no_markets_selected"}))
         return 2
 
-    # Use the most-recent successful experiment's params (from optimize) so
-    # the paper run reflects what was actually validated, not the strategy
-    # defaults. Falls back to {} when no experiments exist yet.
+    # Pick the optimise-winner from the experiments table: highest PnL among
+    # non-walk-forward grid rows whose params dict contains ONLY fields the
+    # strategy's *Config actually exposes (filters out legacy
+    # `{min_profit_usdc, max_capital_usdc}` rows from eval_strategy.py).
     strategy_params: dict = {}
-    exps = lifecycle.list_experiments(args.slug, limit=50)
-    # The walk-forward winner is the last `experiments` row whose params
-    # dict has no `_wf_window` marker (grid points are recorded without it).
+    cfg_field_names: set[str] = set()
+    if h.strategy_module and h.strategy_config_class:
+        import importlib
+        try:
+            mod = importlib.import_module(h.strategy_module)
+            cfg_cls = getattr(mod, h.strategy_config_class)
+            # NT's StrategyConfig is msgspec.Struct → fields in __struct_fields__
+            cfg_field_names = set(getattr(cfg_cls, "__struct_fields__", ()))
+            if not cfg_field_names:
+                cfg_field_names = set(getattr(cfg_cls, "model_fields", {}).keys())
+        except Exception:
+            cfg_field_names = set()
+
+    exps = lifecycle.list_experiments(args.slug, limit=200)
+    best_pnl = float("-inf")
     for e in exps:
         try:
             ep = json.loads(e.get("params_json") or "{}")
@@ -95,10 +108,17 @@ def main() -> int:
             continue
         if "_wf_window" in ep:
             continue
-        strategy_params = ep
-        break
+        if (e.get("n_trades") or 0) < 30:
+            continue
+        # Skip rows whose params don't map to this strategy's config fields.
+        if cfg_field_names and not (set(ep.keys()) & cfg_field_names):
+            continue
+        if (e.get("pnl") or 0) > best_pnl:
+            best_pnl = e.get("pnl") or 0
+            strategy_params = ep
     if strategy_params:
-        logging.info("paper using optimised params: %s", strategy_params)
+        logging.info("paper using optimised params: %s (best_pnl=%.2f)",
+                     strategy_params, best_pnl)
 
     runner = GenericPaperRunner(
         config=cfg,

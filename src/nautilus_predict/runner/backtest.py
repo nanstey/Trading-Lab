@@ -558,10 +558,18 @@ class BacktestRunner:
 
 
 def _filter_to_fields(cfg_cls, params: dict[str, Any]) -> dict[str, Any]:
-    """Keep only kwargs that the StrategyConfig pydantic class declares."""
-    try:
+    """Keep only kwargs that the StrategyConfig class declares.
+
+    NautilusTrader's StrategyConfig is a `msgspec.Struct`, not a Pydantic
+    model — fields live in `__struct_fields__`. Fallback to pydantic
+    `model_fields` for the off-chance of a non-NT config class.
+    """
+    allowed: set[str] = set()
+    if hasattr(cfg_cls, "__struct_fields__"):
+        allowed = set(cfg_cls.__struct_fields__)
+    elif hasattr(cfg_cls, "model_fields"):
         allowed = set(cfg_cls.model_fields.keys())
-    except AttributeError:
+    if not allowed:
         return params
     return {k: v for k, v in params.items() if k in allowed}
 
