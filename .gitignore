@@ -108,3 +108,4 @@ Cargo.lock
 # NautilusTrader catalog — ignore contents but track directory placeholder
 catalog/*
 !catalog/.gitkeep
+.claude/scheduled_tasks.lock

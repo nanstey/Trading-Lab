@@ -170,27 +170,59 @@ def add_hypothesis(
     actor: str = "user",
     db_path: Path = DEFAULT_DB_PATH,
 ) -> Hypothesis:
-    """Insert a new hypothesis row and log the initial state."""
+    """
+    Insert or refresh a hypothesis row.
+
+    First-insert path: logs an initial `lifecycle_transitions` row with the
+    requested state.
+
+    Idempotent-update path: when the slug already exists, this preserves
+    the current `state` and `created_at` and only refreshes metadata
+    (`source_*`, `summary`, `market_criteria_json`, strategy refs,
+    `updated_at`). Does not write a transition.
+    """
     now = datetime.now(tz=UTC).isoformat()
     with _open(db_path) as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO hypotheses "
-            "(slug, source_url, source_type, summary, state, parent_slug, "
-            " created_at, updated_at, market_criteria_json, "
-            " strategy_module, strategy_class, strategy_config_class) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                slug, source_url, source_type, summary, state, parent_slug,
-                now, now, json.dumps(market_criteria or {}),
-                strategy_module, strategy_class, strategy_config_class,
-            ),
-        )
-        conn.execute(
-            "INSERT INTO lifecycle_transitions "
-            "(slug, from_state, to_state, reason, actor, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (slug, None, state, "initial create", actor, now),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT state FROM hypotheses WHERE slug=?", (slug,)
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                "INSERT INTO hypotheses "
+                "(slug, source_url, source_type, summary, state, parent_slug, "
+                " created_at, updated_at, market_criteria_json, "
+                " strategy_module, strategy_class, strategy_config_class) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    slug, source_url, source_type, summary, state, parent_slug,
+                    now, now, json.dumps(market_criteria or {}),
+                    strategy_module, strategy_class, strategy_config_class,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO lifecycle_transitions "
+                "(slug, from_state, to_state, reason, actor, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (slug, None, state, "initial create", actor, now),
+            )
+        else:
+            conn.execute(
+                "UPDATE hypotheses SET "
+                " source_url=?, source_type=?, summary=?, "
+                " parent_slug=COALESCE(?, parent_slug), "
+                " updated_at=?, "
+                " market_criteria_json=?, "
+                " strategy_module=?, strategy_class=?, strategy_config_class=? "
+                "WHERE slug=?",
+                (
+                    source_url, source_type, summary, parent_slug, now,
+                    json.dumps(market_criteria or {}),
+                    strategy_module, strategy_class, strategy_config_class,
+                    slug,
+                ),
+            )
+        conn.execute("COMMIT")
     return get_hypothesis(slug, db_path=db_path)  # type: ignore[return-value]
 
 

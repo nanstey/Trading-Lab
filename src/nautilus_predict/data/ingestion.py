@@ -107,29 +107,25 @@ class PolymarketDataIngester:
         """
         Fetch historical trades for a condition (both YES + NO legs).
 
-        Iterates `GET data-api.polymarket.com/trades?market=<conditionId>` with
-        offset pagination. Trades are returned newest-first; iteration stops
-        when the page is empty or every trade on the page predates `start_ts`.
+        Walks `GET data-api.polymarket.com/trades?market=<conditionId>` in two
+        phases:
 
-        Parameters
-        ----------
-        condition_id : str
-            Market condition ID (0x-prefixed hex).
-        start_ts : int
-            Inclusive Unix timestamp lower bound (seconds).
-        end_ts : int
-            Inclusive Unix timestamp upper bound (seconds).
-        page_size : int
-            Records per page (max 500 per data-api).
+        1. **Offset phase** — newest-first paging via `offset=N`. The data-api
+           rejects offsets above ~3500 with HTTP 400, so this only covers the
+           most recent slice.
+        2. **Before-timestamp phase** — once the offset wall is hit, switch to
+           cursor-by-timestamp: `before=<oldest_ts_seen - 1>` with offset reset.
+           Continues until every trade on a page predates `start_ts` or the
+           response is empty.
 
-        Returns
-        -------
-        int
-            Total trades written to the catalog.
+        Together these get arbitrarily-deep history (subject to whatever the
+        upstream actually retains).
         """
         session = await self._ensure_session()
         total = 0
         offset = 0
+        before: int | None = None
+        oldest_ts_this_run = end_ts
         log.info(
             "fetch_historical_trades start condition=%s start=%s end=%s",
             condition_id,
@@ -138,34 +134,51 @@ class PolymarketDataIngester:
         )
 
         while True:
-            params = {
+            params: dict[str, str] = {
                 "market": condition_id,
                 "limit": str(page_size),
                 "offset": str(offset),
             }
+            if before is not None:
+                params["before"] = str(before)
             async with self._semaphore:
                 try:
                     async with session.get(f"{DATA_API_BASE}/trades", params=params) as resp:
-                        if resp.status == 400:
+                        if resp.status == 400 and before is None:
+                            # Hit offset wall in newest-first mode — switch to
+                            # before-timestamp cursor.
                             log.info(
-                                "data-api offset cap reached at offset=%s (this is normal)",
-                                offset,
+                                "offset cap at %s; switching to before=%s cursor",
+                                offset, oldest_ts_this_run,
                             )
-                            break
+                            before = oldest_ts_this_run - 1
+                            offset = 0
+                            continue
                         resp.raise_for_status()
                         page = await resp.json()
                 except Exception as exc:
-                    log.error("trades fetch failed offset=%s err=%s", offset, exc)
+                    log.error(
+                        "trades fetch failed offset=%s before=%s err=%s",
+                        offset, before, exc,
+                    )
                     break
 
             if not isinstance(page, list) or not page:
+                if before is None:
+                    # Try the before-cursor phase before giving up.
+                    if oldest_ts_this_run <= start_ts:
+                        break
+                    before = oldest_ts_this_run - 1
+                    offset = 0
+                    continue
                 break
 
-            # Bucket by token (asset). Records may include both legs.
             by_token: dict[str, list[dict[str, Any]]] = {}
             all_older = True
             for row in page:
                 ts = int(row.get("timestamp", 0))
+                if ts < oldest_ts_this_run:
+                    oldest_ts_this_run = ts
                 if ts > end_ts:
                     continue
                 if ts >= start_ts:
@@ -178,7 +191,7 @@ class PolymarketDataIngester:
                     continue
                 by_token.setdefault(asset, []).append(
                     {
-                        "timestamp": ts * 1000,  # store ms
+                        "timestamp": ts * 1000,
                         "trade_id": row.get("transactionHash", ""),
                         "side": str(row.get("side", "")),
                         "price": float(row.get("price", 0.0)),
@@ -191,14 +204,14 @@ class PolymarketDataIngester:
                 self._catalog.write_trades(token, trades)
                 total += len(trades)
 
-            if total and total % 1000 == 0:
+            if total > 0 and total % 1000 == 0:
                 log.info("fetch_historical_trades progress total=%s", total)
 
             if len(page) < page_size:
-                # Last page
+                # Reached the end of the dataset.
                 break
             if all_older:
-                # Entire page older than start_ts — no point paging further
+                # Every record on the page is older than start_ts.
                 break
 
             offset += page_size

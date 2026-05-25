@@ -1,51 +1,102 @@
-# Runbook: Drain BACKTEST queue (testing loop)
+# Runbook: Run a backtest + apply decision rules
 
-**For agents.** Iterate over hypotheses in state BACKTEST, run
-`eval_strategy.py` for each, and apply the decision-rule transition.
+**You are the test agent.** Take one hypothesis in SMOKE_PASS or BACKTEST
+state, run `eval_strategy.py`, let it transition the hypothesis to
+OPTIMIZE / SHELVED / REJECTED based on the result. Nothing else.
 
-## Before starting
-
-1. Check budget:
-   ```bash
-   .venv/bin/python scripts/research_cli.py budget
-   ```
-   Exit early if `backtests >= 50` (the default daily cap).
-
-2. Ensure historical data is on disk for the markets the hypothesis selects.
-   `eval_strategy.py` will return zero trades if `data/parquet/<token>/`
-   directories are empty. If empty:
-   ```bash
-   .venv/bin/python scripts/sync_market_metadata.py --active-only
-   # then for each selected condition_id (use research_cli + select_markets):
-   .venv/bin/python scripts/download_polymarket_data.py \
-       --condition-id 0x... --start 2026-05-10 --end 2026-05-26
-   ```
-
-## Drain loop
-
-For each hypothesis with state=BACKTEST:
+## Pre-conditions
 
 ```bash
-SLUG=$(.venv/bin/python scripts/research_cli.py list --state BACKTEST \
-       | jq -r '.[0].slug')
-
-.venv/bin/python scripts/eval_strategy.py --slug "$SLUG" \
-    --start 2026-05-10 --end 2026-05-26
+# Check budget — exit early if exhausted.
+.venv/bin/python scripts/research_cli.py budget
 ```
 
-`eval_strategy.py` prints JSON:
-- `ok=true, applied=true`: hypothesis transitioned to OPTIMIZE / SHELVED / REJECTED
-- `ok=false, error="budget_exhausted"`: stop and try again tomorrow
-- `ok=false, error="hypothesis_not_found"`: log and skip
+If `backtests` ≥ 50 (default daily cap), print `{"ok": false, "error":
+"budget_exhausted"}` and stop. Try again tomorrow.
 
-## Decision rules summary
+## Required inputs
 
-| Sharpe | Max DD | n_trades | New state | Category |
-|---|---|---|---|---|
-| any | any | < 30 | REJECTED | insufficient_trades |
-| < 0 | any | ≥ 30 | REJECTED | unprofitable |
-| 0–0.5 | any | ≥ 30 | SHELVED | marginal_is |
-| 0.5–1.0 | > 25% | ≥ 30 | REJECTED | high_dd |
-| 0.5–1.0 | ≤ 25% | ≥ 30 | SHELVED | marginal_is |
-| ≥ 1.0 | > 20% | ≥ 30 | REJECTED | high_dd |
-| ≥ 1.0 | ≤ 20% | ≥ 30 | OPTIMIZE | — |
+You will be invoked with `--slug <slug> --start <YYYY-MM-DD> --end
+<YYYY-MM-DD>`.
+
+Before running, verify the hypothesis's selected markets have data:
+
+```bash
+.venv/bin/python -c "
+from pathlib import Path
+from nautilus_predict.data.market_catalog import MarketCatalog
+from nautilus_predict.data.market_filter import MarketCriteria, select_markets
+from nautilus_predict.agent import lifecycle
+from nautilus_predict.data.catalog import DataCatalog
+
+h = lifecycle.get_hypothesis('<slug>')
+crit = MarketCriteria.from_dict(h.market_criteria)
+cat = MarketCatalog(Path('data/market_catalog.db'))
+rows = select_markets(crit, cat)
+dc = DataCatalog(Path('data/parquet'))
+on_disk = set(dc.list_available_markets())
+missing = [r.condition_id for r in rows if r.yes_token_id not in on_disk]
+print('missing:', missing)
+"
+```
+
+If any selected markets lack on-disk data, fetch them first:
+
+```bash
+.venv/bin/python scripts/download_polymarket_data.py \
+    --condition-id <each missing condition_id> \
+    --start <start> --end <end>
+```
+
+## Steps
+
+1. Run eval:
+   ```bash
+   .venv/bin/python scripts/eval_strategy.py \
+       --slug <slug> --start <start> --end <end>
+   ```
+
+2. Parse the JSON. Expected fields: `decision_new_state`,
+   `decision_rejection_category`, `applied`, `pnl_usdc`, `sharpe`,
+   `n_trades`, `experiment_id`.
+
+3. Verify the transition was applied:
+   ```bash
+   .venv/bin/python scripts/research_cli.py show --slug <slug> | jq '.state'
+   ```
+   The state must match `decision_new_state` from step 2.
+
+## Decision rules summary (eval_strategy.py applies these automatically)
+
+| Condition | New state | Category |
+|---|---|---|
+| `n_trades < 30` | REJECTED | insufficient_trades |
+| `pnl < 0` | REJECTED | unprofitable |
+| `pnl > 0 AND sharpe < 0 AND n_trades >= 100` | OPTIMIZE | (hold-to-resolution sharpe artefact) |
+| `sharpe < 0.5` | SHELVED | marginal_is |
+| `sharpe < 1.0 AND max_dd > 25%` | REJECTED | high_dd |
+| `sharpe < 1.0` | SHELVED | marginal_is |
+| `sharpe >= 1.0 AND max_dd > 20%` | REJECTED | high_dd |
+| otherwise | OPTIMIZE | — |
+
+## Hard rules
+
+- **Do not transition past OPTIMIZE.** Walk-forward optimisation is a
+  separate runbook.
+- **Do not adjust the decision rules** to make a hypothesis pass. If you
+  think the rules are wrong, file a follow-up and stop.
+- **Do not re-run a hypothesis that's already in a terminal state**
+  (REJECTED, SHELVED, OPTIMIZE, PAPER_READY, PAPER, LIVE, RETIRED). Only
+  re-run when state is SMOKE_PASS or BACKTEST.
+
+## Success criteria
+
+- New row in `experiments` table.
+- Hypothesis state advanced to one of: OPTIMIZE, SHELVED, REJECTED.
+- The state shown by `research_cli.py show` matches `decision_new_state`.
+
+## Output format
+
+```json
+{"ok": true, "slug": "...", "experiment_id": N, "new_state": "OPTIMIZE", "pnl_usdc": ..., "n_trades": ...}
+```

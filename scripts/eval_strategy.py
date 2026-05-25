@@ -34,7 +34,11 @@ load_dotenv()
 
 
 def decide(
-    sharpe: float, max_dd_pct: float, n_trades: int, pnl: float = 0.0
+    sharpe: float,
+    max_dd_pct: float,
+    n_trades: int,
+    pnl: float = 0.0,
+    min_trades: int = 30,
 ) -> tuple[str, str]:
     """
     Return (new_state, rejection_category_or_empty).
@@ -46,14 +50,13 @@ def decide(
     """
     from nautilus_predict.agent.lifecycle import State
 
-    if n_trades < 30:
+    if n_trades < min_trades:
         return State.REJECTED.value, "insufficient_trades"
     if pnl < 0:
         return State.REJECTED.value, "unprofitable"
     # PnL is positive — sort by sharpe band, but be lenient on the cash-equity
     # Sharpe signal for hold-to-resolution strategies.
-    if pnl > 0 and sharpe < 0 and n_trades >= 100:
-        # PnL positive on a strategy that holds-to-resolve; sharpe artefact.
+    if pnl > 0 and sharpe < 0 and n_trades >= max(100, min_trades * 3):
         return State.OPTIMIZE.value, ""
     if sharpe < 0.5:
         return State.SHELVED.value, "marginal_is"
@@ -73,6 +76,11 @@ def main() -> int:
     p.add_argument("--end", required=True)
     p.add_argument("--initial-capital-usdc", type=float, default=10_000.0)
     p.add_argument("--actor", default="agent:eval")
+    p.add_argument(
+        "--min-trades-floor", type=int, default=30,
+        help="Reject as insufficient_trades when n_trades below this. Default 30; "
+             "lower it for short data windows during integration testing.",
+    )
     p.add_argument(
         "--db", type=Path, default=Path("research/experiments.db"),
     )
@@ -136,7 +144,8 @@ def main() -> int:
     budget.consume("backtests", db_path=args.db)
 
     new_state, category = decide(
-        float(sharpe), float(max_dd), int(n_trades), pnl=float(pnl)
+        float(sharpe), float(max_dd), int(n_trades), pnl=float(pnl),
+        min_trades=args.min_trades_floor,
     )
     out = {
         "ok": True,

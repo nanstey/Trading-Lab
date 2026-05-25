@@ -85,9 +85,31 @@ class BacktestRunResult:
 class BacktestRunner:
     """NautilusTrader-backed backtesting runner for binary complement arbs."""
 
-    def __init__(self, config: TradingConfig, data_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        config: TradingConfig,
+        data_dir: Path | None = None,
+        strategy_module: str | None = None,
+        strategy_class: str | None = None,
+        strategy_config_class: str | None = None,
+        strategy_params: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        strategy_module, strategy_class, strategy_config_class
+            When set, dispatch to a hypothesis-provided strategy instead of
+            the default `BinaryArbStrategy`. Used by `run_hypothesis()` which
+            reads these from the hypothesis frontmatter.
+        strategy_params
+            Kwargs to pass to the strategy's *Config constructor.
+        """
         self._config = config
         self._data_dir = data_dir or Path("data/parquet")
+        self._strategy_module = strategy_module
+        self._strategy_class = strategy_class
+        self._strategy_config_class = strategy_config_class
+        self._strategy_params = strategy_params or {}
 
     # ------------------------------------------------------------------
     # Public entry points
@@ -138,6 +160,16 @@ class BacktestRunner:
         catalog.close()
         log.info("hypothesis %s selected %d markets", hypothesis_slug, len(markets))
 
+        # If the hypothesis specifies its own strategy, use it; otherwise
+        # fall back to the BinaryArbStrategy default already configured.
+        fm = _parse_hypothesis_frontmatter(md_path)
+        if not self._strategy_module:
+            self._strategy_module = fm.get("strategy_module") or None
+        if not self._strategy_class:
+            self._strategy_class = fm.get("strategy_class") or None
+        if not self._strategy_config_class:
+            self._strategy_config_class = fm.get("strategy_config_class") or None
+
         results: list[MarketBacktestResult] = []
         for m in markets:
             if not m.yes_token_id or not m.no_token_id:
@@ -185,10 +217,6 @@ class BacktestRunner:
             load_trades_as_trade_ticks,
             make_instrument,
             reconstruct_book_from_trades,
-        )
-        from nautilus_predict.strategies.arb_complement import (
-            BinaryArbConfig,
-            BinaryArbStrategy,
         )
 
         log.info(
@@ -257,16 +285,7 @@ class BacktestRunner:
         engine.add_data(yes_ticks + no_ticks, sort=True)
         engine.add_data(yes_deltas + no_deltas, sort=True)
 
-        strategy_config = BinaryArbConfig(
-            strategy_id=f"ARB-{condition_id[:8]}",
-            min_profit_usdc=self._config.arb.min_profit_usdc,
-            max_capital_usdc=self._config.arb.max_capital_usdc,
-        )
-        strategy = BinaryArbStrategy(config=strategy_config)
-        # Pre-register the pair (BinaryArbStrategy.register_market_pair would
-        # subscribe to deltas on the engine — we want subscription to happen
-        # via on_start so it lines up with NT's engine lifecycle).
-        strategy._initial_pair = (condition_id, yes_instr.id, no_instr.id)  # type: ignore[attr-defined]
+        strategy = self._build_strategy(condition_id, yes_instr, no_instr)
         engine.add_strategy(strategy)
 
         engine.run()
@@ -276,6 +295,58 @@ class BacktestRunner:
         )
         engine.dispose()
         return result
+
+    def _build_strategy(self, condition_id: str, yes_instr, no_instr):
+        """
+        Construct the strategy instance for this single-market run.
+
+        If a `strategy_module/strategy_class` was passed (from the hypothesis
+        frontmatter), import and instantiate it. Otherwise fall back to the
+        default `BinaryArbStrategy`. Pre-registers a single pair via
+        `register_market_pair` if the strategy supports it, else assigns
+        `_initial_pair` for strategies that consume it in `on_start`.
+
+        The strategy's *Config is instantiated with `self._strategy_params`
+        kwargs filtered to fields the config actually exposes.
+        """
+        if self._strategy_module and self._strategy_class:
+            import importlib
+
+            mod = importlib.import_module(self._strategy_module)
+            cls = getattr(mod, self._strategy_class)
+            cfg_cls = (
+                getattr(mod, self._strategy_config_class)
+                if self._strategy_config_class
+                else None
+            )
+            cfg = (
+                cfg_cls(**_filter_to_fields(cfg_cls, self._strategy_params))
+                if cfg_cls
+                else None
+            )
+            strategy = cls(config=cfg) if cfg is not None else cls()
+        else:
+            from nautilus_predict.strategies.arb_complement import (
+                BinaryArbConfig,
+                BinaryArbStrategy,
+            )
+
+            cfg = BinaryArbConfig(
+                strategy_id=f"ARB-{condition_id[:8]}",
+                min_profit_usdc=self._config.arb.min_profit_usdc,
+                max_capital_usdc=self._config.arb.max_capital_usdc,
+            )
+            strategy = BinaryArbStrategy(config=cfg)
+
+        # Pair registration — try known idioms in order of preference.
+        if hasattr(strategy, "register_market_pair"):
+            strategy.register_market_pair(condition_id, yes_instr.id, no_instr.id)
+        elif hasattr(strategy, "register_instrument"):
+            strategy.register_instrument(yes_instr.id)
+            strategy.register_instrument(no_instr.id)
+        else:
+            strategy._initial_pair = (condition_id, yes_instr.id, no_instr.id)  # type: ignore[attr-defined]
+        return strategy
 
     def _build_fill_model(self):
         from nautilus_trader.backtest.models import FillModel
@@ -397,6 +468,33 @@ class BacktestRunner:
         drawdown = (equity - running_max) / running_max
         max_dd = float(drawdown.min()) * 100.0
         return sharpe, max_dd
+
+
+def _filter_to_fields(cfg_cls, params: dict[str, Any]) -> dict[str, Any]:
+    """Keep only kwargs that the StrategyConfig pydantic class declares."""
+    try:
+        allowed = set(cfg_cls.model_fields.keys())
+    except AttributeError:
+        return params
+    return {k: v for k, v in params.items() if k in allowed}
+
+
+def _parse_hypothesis_frontmatter(path: Path) -> dict[str, Any]:
+    """Read just the frontmatter as a dict (returns {} on any failure)."""
+    if not path.exists():
+        return {}
+    text = path.read_text()
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end < 0:
+        return {}
+    try:
+        import yaml
+
+        return yaml.safe_load(text[3:end].strip()) or {}
+    except Exception:
+        return {}
 
 
 def _parse_hypothesis(path: Path) -> tuple[dict[str, Any] | None, str]:
