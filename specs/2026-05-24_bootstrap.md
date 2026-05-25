@@ -51,7 +51,7 @@ Pick at the moment of need, not in advance. Decisions deferred:
 
 ### What this changes downstream
 - **Phase 3.4** (24h paper run): execute on laptop, plan around your sleep schedule. If interruptions block the gate, that's the bottleneck signal to deploy.
-- **Phase 4.3** (pre-live checklist): runs locally. Hosting is a separate decision made later, not a pre-live gate.
+- **Phase 4.2** (pre-live checklist): runs locally. Hosting is a separate decision made later, not a pre-live gate.
 
 ---
 
@@ -88,8 +88,7 @@ Pick at the moment of need, not in advance. Decisions deferred:
 
 ### Phase 4 — Live Trading
 - [ ] Step 4.1 — Wire `LiveRunner` to `TradingNode`
-- [ ] Step 4.2 — Integrate polyfill-rs Rust hot path *(optional)*
-- [ ] Step 4.3 — Pre-live checklist + go-live **[YOU]**
+- [ ] Step 4.2 — Pre-live checklist + go-live **[YOU]**
 
 ### Phase 5 — Agentic Layer
 - [ ] Step 5.1 — Define agentic tool surface (CLI scripts)
@@ -681,21 +680,7 @@ Same pattern as `PaperRunner` in Step 3.3, but:
 
 ---
 
-### Step 4.2 — Integrate polyfill-rs Rust Hot Path (Optional, performance-only)
-
-This step is optional for initial live trading. Skip if Phase 4 is otherwise ready.
-
-**[AGENT]** Enable PyO3 in `polyfill-rs/Cargo.toml`, add Python bindings for `WsClient` in `polyfill-rs/src/lib.rs`, and create `src/nautilus_predict/venues/polymarket/ws_fast.py` that imports `polyfill_rs.WsClient` for the cancel/replace hot path.
-
-**[YOU]** Build the Rust extension:
-```bash
-cd polyfill-rs && maturin develop --release
-python -c "import polyfill_rs; print('Rust module loaded')"
-```
-
----
-
-### Step 4.3 — Pre-Live Checklist
+### Step 4.2 — Pre-Live Checklist
 
 _Runs locally. Hosting is decoupled from the go-live decision — see § Deployment Posture._
 
@@ -708,7 +693,7 @@ _Runs locally. Hosting is decoupled from the go-live decision — see § Deploym
 - [ ] `make paper` has run for 24h without issues
 - [ ] `make test` passes on current code
 
-**Verification (4.3 — live):**
+**Verification (4.2 — live):**
 ```bash
 make live
 # Within 60s:
