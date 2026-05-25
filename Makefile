@@ -266,9 +266,31 @@ paper-watcher: ## Run the auto-retirement watcher across PAPER strategies
 	$(PYTHON) $(SCRIPTS)/paper_watcher.py
 
 .PHONY: paper-run
-paper-run: ## Drive GenericPaperRunner on a PAPER slug (DURATION_SECS optional)
+paper-run: ## Drive PaperRunnerV2 (real TradingNode, is_paper=True) on a PAPER slug
 	@if [ -z "$(SLUG)" ]; then echo "Usage: make paper-run SLUG=<slug> [DURATION_SECS=600]"; exit 1; fi
+	$(PYTHON) $(SCRIPTS)/paper_run_v2.py --slug $(SLUG) $(if $(DURATION_SECS),--duration-secs $(DURATION_SECS),)
+
+.PHONY: paper-run-legacy
+paper-run-legacy: ## Legacy GenericPaperRunner (monkey-patched, no real exec path)
+	@if [ -z "$(SLUG)" ]; then echo "Usage: make paper-run-legacy SLUG=<slug> [DURATION_SECS=600]"; exit 1; fi
 	$(PYTHON) $(SCRIPTS)/paper_run.py --slug $(SLUG) $(if $(DURATION_SECS),--duration-secs $(DURATION_SECS),)
+
+.PHONY: live-run
+live-run: ## LIVE — same as paper-run but with REAL ORDERS. Requires TRADING_MODE=live + LIVE_TRADING_CONFIRMED=true
+	@if [ -z "$(SLUG)" ]; then echo "Usage: make live-run SLUG=<slug> [DURATION_SECS=3600] [CONFIRM=1]"; exit 1; fi
+	$(PYTHON) $(SCRIPTS)/live_run.py --slug $(SLUG) $(if $(DURATION_SECS),--duration-secs $(DURATION_SECS),) $(if $(CONFIRM),--i-understand-this-is-live,)
+
+.PHONY: data-ingest
+data-ingest: ## Continuous data ingestion daemon (long-lived; SIGINT to stop)
+	$(PYTHON) $(SCRIPTS)/run_ingestion.py $(if $(SLUGS),--slugs $(SLUGS),) $(if $(DURATION_SECS),--duration-secs $(DURATION_SECS),)
+
+.PHONY: rolling-eval
+rolling-eval: ## Re-evaluate each PAPER strategy on the last WINDOW_DAYS of data (default 2)
+	$(PYTHON) $(SCRIPTS)/rolling_eval.py $(if $(WINDOW_DAYS),--window-days $(WINDOW_DAYS),) $(if $(STATES),--states $(STATES),)
+
+.PHONY: operator-brief
+operator-brief: ## Operator briefing (JSON for the remote agent; --md for human-readable)
+	$(PYTHON) $(SCRIPTS)/operator_briefing.py $(if $(MD),--md,)
 
 # ---------------------------------------------------------------------------
 # Docker

@@ -1,4 +1,21 @@
 """
+GenericPaperRunner — DEPRECATED in favour of `runner/paper_v2.py`.
+
+Kept for reference + as a fallback if the full NT TradingNode stack
+breaks. New work should use `PaperRunnerV2`, which exercises the REAL
+execution-client code path with `is_paper=True` + the
+`PolymarketPaperFillEngine` Actor.
+
+Difference summary:
+  - GenericPaperRunner (this file): monkey-patches strategy.order_factory
+    and intercepts submit_order. No msgbus, no portfolio, no NT engine.
+    Strategy logic runs, but the production order-submission path is
+    NOT exercised → going to live = first time we'd exercise that path.
+  - PaperRunnerV2: builds a real NT TradingNode. Strategy →
+    order_factory → submit_order → PolymarketExecutionClient
+    (is_paper=True) → fill engine → OrderFilled → strategy. Flipping
+    `is_paper=False` makes the same runner LIVE.
+
 GenericPaperRunner — strategy-class-agnostic paper trading.
 
 Where `PaperRunner` reproduces BinaryArbStrategy's logic in-process, this

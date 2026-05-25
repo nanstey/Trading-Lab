@@ -71,9 +71,12 @@ external agent runtime can drive a runbook. No `anthropic` SDK dependency.
 ### Runners
 | Module | Purpose |
 |--------|---------|
-| `src/nautilus_predict/runner/backtest.py` | `BacktestRunner.run_pair / run_hypothesis`. NautilusTrader `BacktestEngine` with `FillModel(prob_fill_on_limit=0.5, prob_slippage=0.5)` and 200ms `LatencyModel`. Terminal PnL is the genuine arb edge: matched pairs resolve at $1.00. |
-| `src/nautilus_predict/runner/paper.py` | `PaperRunner` — in-process WS stream + simulated fills + jsonl trade log. **Doesn't go through NT TradingNode** (that's still TODO when execution.py/data.py are fully wired). |
-| `src/nautilus_predict/runner/live.py` | `LiveRunner` — placeholder, blocked on Phase 4. |
+| `src/nautilus_predict/runner/backtest.py` | `BacktestRunner.run_pair / run_hypothesis`. NautilusTrader `BacktestEngine` with `FillModel(prob_fill_on_limit=0.5, prob_slippage=0.5)` and 200ms `LatencyModel`. Terminal PnL is the genuine arb edge; per-pair Sharpe computed from realised pair-PnL series. |
+| `src/nautilus_predict/runner/paper_v2.py` | **`PaperRunnerV2`** — real NT TradingNode + `is_paper=True` + `PolymarketPaperFillEngine` Actor. Production code path. |
+| `src/nautilus_predict/runner/live_v2.py` | **`LiveRunner`** — same TradingNode as PaperRunnerV2, `is_paper=False`. Pre-flight refuses without TRADING_MODE=live, LIVE_TRADING_CONFIRMED=true, L1+L2 creds, kill switch clear, hypothesis state=LIVE. |
+| `src/nautilus_predict/runner/generic_paper.py` | `GenericPaperRunner` — **legacy**. Monkey-patches order_factory; doesn't exercise real exec path. Available via `make paper-run-legacy`. |
+| `src/nautilus_predict/runner/paper.py` | `PaperRunner` — older arb-specific in-process harness. Superseded; kept for reference. |
+| `src/nautilus_predict/runner/live.py` | `LiveRunner` (old placeholder) — superseded by `live_v2.py`. |
 
 ### Agentic layer (Phase 5)
 | Module | Purpose |
@@ -107,30 +110,43 @@ Every script under `scripts/` is designed for agentic use: argparse + JSON on st
 | `scripts/transition_lifecycle.py --slug --to --reason` | Sole atomic-write entry for state transitions. Human-gated ones refuse non-`user:*` actors. |
 | `scripts/smoke_test_strategy.py --slug <slug>` | AST guards + optional pytest + snapshot to `research/snapshots/<hash>.py`. |
 | `scripts/eval_strategy.py --slug --start --end` | Run hypothesis backtest, record experiment, apply decision rules. |
-| `scripts/optimize_strategy.py --slug --data-start --data-end` | Grid sweep + walk-forward; transitions to PAPER_READY / SHELVED / REJECTED. |
-| `scripts/paper_run.py --slug --duration-secs` | Live-feed paper run (GenericPaperRunner); writes signals to `logs/paper_<slug>_<date>.jsonl`. |
+| `scripts/optimize_strategy.py --slug --data-start --data-end [--workers N]` | Grid sweep + walk-forward (parallel); transitions to PAPER_READY / SHELVED / REJECTED. |
+| `scripts/paper_run_v2.py --slug --duration-secs` | **Primary paper runtime** — real TradingNode + is_paper=True + fill engine. |
+| `scripts/paper_run.py --slug --duration-secs` | Legacy GenericPaperRunner — monkey-patched harness, no real exec path. |
+| `scripts/live_run.py --slug --duration-secs [--i-understand-this-is-live]` | LIVE trading. Default mode = pre-flight check ONLY; requires `--i-understand-...` to actually submit orders. |
+| `scripts/run_ingestion.py` | Continuous WS data ingestion daemon — fills the catalog for rolling-eval. |
+| `scripts/rolling_eval.py [--window-days N]` | Re-eval each PAPER strategy on the last N days. Cron entry; emits events. |
 | `scripts/paper_summary.py --slug [--date]` | Pair entry/close signals → realised PnL report + experiments row. |
-| `scripts/paper_watcher.py` | Auto-retirement (single-day -5% → HALTED, 7d -15% → RETIRED). Cron every 10 min. |
+| `scripts/paper_watcher.py` | Auto-retirement (single-day -5% → HALTED, 7d -15% → RETIRED). |
+| `scripts/operator_briefing.py [--md]` | Read events log + apply forwarding policy → JSON for external SMS agent. |
 | `scripts/discover_strategies.py [--rss]` | Drain manual_inbox + (opt) RSS into PROPOSED. |
 | `scripts/validate_loop.py` | Phase 5.11 — drives known-bad + known-good through the loop. |
 | `scripts/halt_trading.py --reason <text>` | Write `data/.kill_switch` — halts all paper/live runners. |
 | `scripts/reset_kill_switch.py --confirm` | Clear `data/.kill_switch`. Refuses without `--confirm`. |
 | `scripts/derive_polymarket_keys.py` | One-time L2 credential derivation. |
 
-### Runtime note: GenericPaperRunner vs full NT TradingNode
+### Runtime: TradingNode-driven paper + live (current)
 
-Paper trading runs through `runner/generic_paper.py` — a lightweight harness
-that imports the strategy class, monkey-patches `order_factory` + intercepts
-`submit_order`, and feeds it live WS data. It is NOT a NautilusTrader
-`TradingNode` — there's no message bus, no cache, no order state machine.
-That trade-off is deliberate: it lets ANY strategy paper-run without
-finishing the full `venues/polymarket/execution.py` user-channel wiring.
+Paper and live trading both run through a real NautilusTrader
+`TradingNode` built via `runner/paper_v2.py` (`PaperRunnerV2`) and
+`runner/live_v2.py` (`LiveRunner`). The ONLY difference between the two
+runtimes is the `is_paper` flag on `PolymarketExecClientConfig`:
 
-The `venues/polymarket/{data,execution}.py` handlers are functionally
-complete (TradeTick / OrderAccepted / OrderFilled / OrderCanceled /
-OrderRejected dispatch), so a future `TradingNode`-driven runtime is
-unblocked. That migration is a v2 item — needed for live trading; not
-needed for the current paper-trading flow.
+  - `is_paper=True` — `PolymarketExecutionClient` accepts orders and
+    delegates fills to `PolymarketPaperFillEngine` (an Actor sitting on
+    the same message bus). No venue calls; no money moves.
+  - `is_paper=False` — same code path, but the execution client actually
+    POSTs orders to PM and gets real fill confirmations via the
+    user-channel WS.
+
+That symmetry is the architectural commitment. There's no "paper
+worked but live blew up" surprise possible — same NT engine, same
+msgbus, same execution-client class.
+
+Legacy `runner/generic_paper.py` (`GenericPaperRunner`) is preserved
+for reference and as a fallback. It monkey-patches `order_factory` and
+intercepts `submit_order` — does NOT exercise the real execution path.
+Not used by default; available via `make paper-run-legacy`.
 
 ---
 
