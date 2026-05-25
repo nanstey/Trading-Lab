@@ -164,11 +164,169 @@ class PolymarketExecutionClient(LiveExecutionClient):
             self._handle_trade_update(msg)
 
     def _handle_order_update(self, msg: dict[str, Any]) -> None:
-        status = msg.get("status")
-        log.debug("Order update", venue_order_id=msg.get("id"), status=status)
+        """
+        Parse Polymarket user-channel order-status updates.
+
+        Polymarket status values mapped here:
+          - LIVE / OPEN       → OrderAccepted (acknowledged but not filled)
+          - MATCHED / FILLED  → OrderFilled (delegate to _handle_trade_update
+                                 for the size/price detail)
+          - CANCELED          → OrderCanceled
+          - REJECTED          → OrderRejected
+        """
+        status = (msg.get("status") or "").upper()
+        venue_order_id = str(msg.get("id") or msg.get("order_id") or "")
+        client_order_id = self._client_id_for_venue(venue_order_id)
+        log.info(
+            "user-channel order update",
+            venue_order_id=venue_order_id,
+            status=status,
+        )
+        if status in ("LIVE", "OPEN", "ACCEPTED"):
+            order = self._cached_order(client_order_id)
+            if order is not None and venue_order_id:
+                from nautilus_trader.model.identifiers import VenueOrderId as _VOID
+                self._send_order_accepted(order, _VOID(venue_order_id))
+        elif status in ("MATCHED", "FILLED"):
+            # Trade detail comes in the companion trade message; if this is
+            # the only message we get, synthesise a fill from `size_matched`
+            # and `price` if present.
+            self._handle_trade_update(msg)
+        elif status == "CANCELED":
+            self._emit_cancel(client_order_id, msg.get("instrument_id"))
+        elif status == "REJECTED":
+            order = self._cached_order(client_order_id)
+            if order is not None:
+                self._send_order_rejected(order, reason=msg.get("reason", "venue rejected"))
 
     def _handle_trade_update(self, msg: dict[str, Any]) -> None:
-        log.debug("Trade update", trade_id=msg.get("id"))
+        """
+        Translate a Polymarket trade confirmation into `OrderFilled`.
+
+        Required fields on the inbound message (per PM user-channel docs):
+          - id              (venue trade id)
+          - order_id        (venue order id)
+          - size_matched    (filled quantity)
+          - price           (fill price)
+          - taker_order_id  (optional — set if we're the taker)
+        """
+        venue_trade_id = str(msg.get("id") or "")
+        venue_order_id = str(msg.get("order_id") or "")
+        client_order_id = self._client_id_for_venue(venue_order_id)
+        order = self._cached_order(client_order_id)
+        if order is None:
+            log.warning(
+                "trade for unknown order — skipping",
+                venue_order_id=venue_order_id,
+                client_order_id=client_order_id,
+            )
+            return
+        try:
+            qty = float(msg.get("size_matched") or msg.get("size") or 0)
+            price = float(msg.get("price") or 0)
+        except (TypeError, ValueError):
+            log.warning("trade update missing numeric size/price", msg=msg)
+            return
+        if qty <= 0 or price <= 0:
+            return
+        self._send_order_filled(
+            order=order,
+            venue_order_id=venue_order_id,
+            venue_trade_id=venue_trade_id,
+            last_qty=qty,
+            last_px=price,
+        )
+
+    # ------------------------------------------------------------------
+    # Helper: cache lookups for order/client-id mapping
+    # ------------------------------------------------------------------
+
+    def _client_id_for_venue(self, venue_order_id: str) -> str:
+        for client_id, vid in self._order_id_map.items():
+            if vid == venue_order_id:
+                return client_id
+        return ""
+
+    def _cached_order(self, client_order_id: str):
+        if not client_order_id:
+            return None
+        from nautilus_trader.model.identifiers import ClientOrderId
+        try:
+            return self._cache.order(ClientOrderId(client_order_id))
+        except Exception:
+            return None
+
+    def _emit_cancel(self, client_order_id: str, instrument_id_str) -> None:
+        """Emit OrderCanceled when the venue tells us a previously-known order is gone."""
+        from nautilus_trader.model.events import OrderCanceled as _OC
+        from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
+        order = self._cached_order(client_order_id)
+        instrument_id = order.instrument_id if order is not None else (
+            InstrumentId.from_str(instrument_id_str) if instrument_id_str else None
+        )
+        if instrument_id is None:
+            return
+        strategy_id = order.strategy_id if order is not None else None
+        self._msgbus.publish(
+            topic=f"events.order.{strategy_id}",
+            msg=_OC(
+                trader_id=self.trader_id,
+                strategy_id=strategy_id,
+                instrument_id=instrument_id,
+                client_order_id=ClientOrderId(client_order_id),
+                venue_order_id=None,
+                account_id=self.account_id,
+                ts_event=self._clock.timestamp_ns(),
+                ts_init=self._clock.timestamp_ns(),
+                reconciliation=False,
+            ),
+        )
+
+    def _send_order_filled(
+        self,
+        order,
+        venue_order_id: str,
+        venue_trade_id: str,
+        last_qty: float,
+        last_px: float,
+    ) -> None:
+        """Publish an OrderFilled event for the given order."""
+        from nautilus_trader.model.enums import LiquiditySide
+        from nautilus_trader.model.events import OrderFilled
+        from nautilus_trader.model.identifiers import (
+            PositionId,
+            TradeId,
+        )
+        from nautilus_trader.model.identifiers import (
+            VenueOrderId as _VOID,
+        )
+        from nautilus_trader.model.objects import Money, Price, Quantity
+
+        # Polymarket commission is zero on most binary markets currently.
+        # Position id derives from the (strategy, instrument) tuple via cache.
+        self._msgbus.publish(
+            topic=f"events.order.{order.strategy_id}",
+            msg=OrderFilled(
+                trader_id=self.trader_id,
+                strategy_id=order.strategy_id,
+                instrument_id=order.instrument_id,
+                client_order_id=order.client_order_id,
+                venue_order_id=_VOID(venue_order_id),
+                account_id=self.account_id,
+                trade_id=TradeId(venue_trade_id[:32] or f"T{self._clock.timestamp_ns()}"),
+                position_id=PositionId(f"{order.strategy_id}-{order.instrument_id.symbol}"),
+                order_side=order.side,
+                order_type=order.order_type,
+                last_qty=Quantity.from_str(f"{last_qty:.2f}"),
+                last_px=Price.from_str(f"{last_px:.2f}"),
+                currency=order.instrument_id.symbol,  # placeholder; venue should provide
+                commission=Money(0, order.instrument_id.symbol),  # placeholder
+                liquidity_side=LiquiditySide.TAKER,
+                ts_event=self._clock.timestamp_ns(),
+                ts_init=self._clock.timestamp_ns(),
+                reconciliation=False,
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Helpers for emitting NautilusTrader events

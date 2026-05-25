@@ -85,7 +85,6 @@ def main() -> int:
 
 def _validate_known_bad(db_path: Path) -> dict:
     """Write a deliberately-illegal strategy, run smoke, assert REJECTED."""
-    from nautilus_predict.agent import lifecycle
 
     # Always start from a clean slate for this slug.
     _delete_files()

@@ -107,9 +107,30 @@ Every script under `scripts/` is designed for agentic use: argparse + JSON on st
 | `scripts/transition_lifecycle.py --slug --to --reason` | Sole atomic-write entry for state transitions. Human-gated ones refuse non-`user:*` actors. |
 | `scripts/smoke_test_strategy.py --slug <slug>` | AST guards + optional pytest + snapshot to `research/snapshots/<hash>.py`. |
 | `scripts/eval_strategy.py --slug --start --end` | Run hypothesis backtest, record experiment, apply decision rules. |
+| `scripts/optimize_strategy.py --slug --data-start --data-end` | Grid sweep + walk-forward; transitions to PAPER_READY / SHELVED / REJECTED. |
+| `scripts/paper_run.py --slug --duration-secs` | Live-feed paper run (GenericPaperRunner); writes signals to `logs/paper_<slug>_<date>.jsonl`. |
+| `scripts/paper_summary.py --slug [--date]` | Pair entry/close signals → realised PnL report + experiments row. |
+| `scripts/paper_watcher.py` | Auto-retirement (single-day -5% → HALTED, 7d -15% → RETIRED). Cron every 10 min. |
+| `scripts/discover_strategies.py [--rss]` | Drain manual_inbox + (opt) RSS into PROPOSED. |
+| `scripts/validate_loop.py` | Phase 5.11 — drives known-bad + known-good through the loop. |
 | `scripts/halt_trading.py --reason <text>` | Write `data/.kill_switch` — halts all paper/live runners. |
 | `scripts/reset_kill_switch.py --confirm` | Clear `data/.kill_switch`. Refuses without `--confirm`. |
 | `scripts/derive_polymarket_keys.py` | One-time L2 credential derivation. |
+
+### Runtime note: GenericPaperRunner vs full NT TradingNode
+
+Paper trading runs through `runner/generic_paper.py` — a lightweight harness
+that imports the strategy class, monkey-patches `order_factory` + intercepts
+`submit_order`, and feeds it live WS data. It is NOT a NautilusTrader
+`TradingNode` — there's no message bus, no cache, no order state machine.
+That trade-off is deliberate: it lets ANY strategy paper-run without
+finishing the full `venues/polymarket/execution.py` user-channel wiring.
+
+The `venues/polymarket/{data,execution}.py` handlers are functionally
+complete (TradeTick / OrderAccepted / OrderFilled / OrderCanceled /
+OrderRejected dispatch), so a future `TradingNode`-driven runtime is
+unblocked. That migration is a v2 item — needed for live trading; not
+needed for the current paper-trading flow.
 
 ---
 
