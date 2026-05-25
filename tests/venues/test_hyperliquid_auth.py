@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from nautilus_predict.venues.hyperliquid.auth import (
     current_nonce,
     derive_address,

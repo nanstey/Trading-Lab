@@ -24,7 +24,7 @@ the underlying issue.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 
 log = logging.getLogger(__name__)
 

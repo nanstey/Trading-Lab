@@ -10,7 +10,8 @@ Tests that the kill switch correctly:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import contextlib
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -81,10 +82,8 @@ class TestDailyLossCheck:
     def test_pnl_below_limit_sets_triggered(self) -> None:
         """After loss limit breach, is_triggered should be True."""
         ks, cancel_fn = make_kill_switch(limit=-200.0)
-        try:
+        with contextlib.suppress(KillSwitchTriggered):
             ks.check_daily_loss(current_pnl=-250.0)
-        except KillSwitchTriggered:
-            pass
         assert ks.is_triggered is True
 
     def test_positive_pnl_never_triggers(self) -> None:
@@ -131,7 +130,7 @@ class TestTrigger:
         ks, _ = make_kill_switch(cancel_fn=cancel_fn)
 
         # Patch the async cancellation to run synchronously in test
-        with patch.object(ks, "_async_cancel_all", new_callable=AsyncMock) as mock_cancel:
+        with patch.object(ks, "_async_cancel_all", new_callable=AsyncMock):
             ks.trigger("test trigger")
             # Give event loop a chance to schedule the task
             import asyncio
@@ -158,7 +157,7 @@ class TestKillSwitchTriggered:
 
     def test_exception_is_exception(self) -> None:
         """KillSwitchTriggered should be catchable as Exception."""
-        with pytest.raises(Exception):
+        with pytest.raises(KillSwitchTriggered):
             raise KillSwitchTriggered("test")
 
     def test_can_catch_specifically(self) -> None:

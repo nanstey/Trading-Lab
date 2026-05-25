@@ -7,13 +7,10 @@ a live NautilusTrader node.
 
 from __future__ import annotations
 
-import pytest
-
 from nautilus_predict.strategies.arb_complement import (
     TAKER_FEE,
     ArbOpportunity,
     BinaryArbConfig,
-    BinaryArbStrategy,
     MarketPair,
 )
 

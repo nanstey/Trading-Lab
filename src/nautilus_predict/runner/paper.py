@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Type
+from typing import Any
 
 from nautilus_predict.config import TradingConfig, TradingMode
 
@@ -50,7 +50,7 @@ class PaperRunner:
     -------
     >>> runner = PaperRunner(config=TradingConfig())
     >>> await runner.run(
-    ...     strategy_class=ComplementArbStrategy,
+    ...     strategy_class=BinaryArbStrategy,
     ...     token_ids=["0xabc..."],
     ... )
     """
@@ -64,7 +64,7 @@ class PaperRunner:
 
     async def run(
         self,
-        strategy_class: Type[Any],
+        strategy_class: type[Any],
         token_ids: list[str],
     ) -> None:
         """
@@ -80,9 +80,9 @@ class PaperRunner:
         token_ids : list[str]
             Polymarket token IDs to subscribe to.
 
-        TODO(live): Integrate NautilusTrader TradingNode with paper trading config
-        TODO(live): Configure simulated fills via NautilusTrader's SimulatedExchange
-        TODO(live): Add performance metrics collection
+        TODO(phase3): Integrate NautilusTrader TradingNode with paper trading config
+        TODO(phase3): Configure simulated fills via NautilusTrader's SimulatedExchange
+        TODO(phase3): Add performance metrics collection
         """
         log.info(
             "Starting paper trading",
@@ -94,11 +94,11 @@ class PaperRunner:
         )
 
         # Initialize risk module
-        from nautilus_predict.adapters.polymarket.auth import PolymarketAuth, L2Credentials
-        from nautilus_predict.adapters.polymarket.client import PolymarketClient
-        from nautilus_predict.risk.kill_switch import KillSwitch
         from nautilus_predict.risk.heartbeat import HeartbeatWatcher
+        from nautilus_predict.risk.kill_switch import KillSwitch
         from nautilus_predict.risk.position_limits import PositionLimits
+        from nautilus_predict.venues.polymarket.auth import L2Credentials
+        from nautilus_predict.venues.polymarket.client import PolymarketRestClient
 
         # In paper mode, cancel_all_fn is a no-op (no real orders to cancel)
         async def paper_cancel_all() -> None:
@@ -108,20 +108,15 @@ class PaperRunner:
             daily_loss_limit_usdc=self._config.risk.daily_loss_limit_usdc,
             cancel_all_fn=paper_cancel_all,
         )
-        position_limits = PositionLimits(config=self._config.risk)
+        _position_limits = PositionLimits(config=self._config.risk)
 
-        # Initialize Polymarket client for data feeds (no auth needed for paper)
-        auth = PolymarketAuth(
-            private_key=self._config.polymarket.private_key.get_secret_value() or "0" * 64
+        creds = L2Credentials(
+            api_key=self._config.polymarket.api_key,
+            api_secret=self._config.polymarket.api_secret.get_secret_value(),
+            api_passphrase=self._config.polymarket.api_passphrase.get_secret_value(),
         )
-        if self._config.polymarket.has_l2_credentials:
-            auth.set_l2_credentials(L2Credentials(
-                api_key=self._config.polymarket.api_key,
-                api_secret=self._config.polymarket.api_secret.get_secret_value(),
-                api_passphrase=self._config.polymarket.api_passphrase.get_secret_value(),
-            ))
-
-        async with PolymarketClient(config=self._config.polymarket, auth=auth) as client:
+        client = PolymarketRestClient(http_url=self._config.polymarket.host, creds=creds)
+        try:
             # Set up heartbeat watcher
             async def on_heartbeat_timeout() -> None:
                 log.error("Heartbeat timeout in paper mode")
@@ -133,20 +128,14 @@ class PaperRunner:
                 on_timeout=on_heartbeat_timeout,
             )
 
-            # Instantiate strategy
-            strategy = strategy_class(
-                config=self._config,
-                kill_switch=kill_switch,
-            )
-
             log.info("Paper trading initialized, starting feeds")
 
             try:
                 await heartbeat_watcher.start()
 
-                # TODO(live): Start NautilusTrader TradingNode with paper config
-                # TODO(live): Subscribe to market data feeds for all token_ids
-                # TODO(live): Run strategy event loop
+                # TODO(phase3): Start NautilusTrader TradingNode with paper config
+                # TODO(phase3): Subscribe to market data feeds for all token_ids
+                # TODO(phase3): Run strategy event loop
 
                 # Placeholder: keep running until cancelled
                 log.info(
@@ -160,3 +149,5 @@ class PaperRunner:
             finally:
                 await heartbeat_watcher.stop()
                 log.info("Paper trading stopped")
+        finally:
+            await client.close()

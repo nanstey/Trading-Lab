@@ -20,7 +20,6 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 # Load .env if present
 try:
@@ -93,28 +92,21 @@ def check_env_var(
     return CheckResult(name=name, passed=True, value=display_value)
 
 
-async def check_polymarket_connectivity(host: str) -> CheckResult:
-    """Check if Polymarket CLOB API is reachable."""
+async def check_polymarket_connectivity(_host: str) -> CheckResult:
+    """Check if Polymarket data API is reachable (public, no auth required)."""
+    data_api = "https://data-api.polymarket.com"
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{host}/markets", params={"next_cursor": "MA=="})
-            resp.raise_for_status()
-            data = resp.json()
-            market_count = len(data.get("data", []))
-            return CheckResult(
-                name="Polymarket API",
-                passed=True,
-                value=f"HTTP {resp.status_code}",
-                note=f"{market_count} markets returned",
-            )
-    except ImportError:
-        return CheckResult(
-            name="Polymarket API",
-            passed=False,
-            value="httpx not installed",
-            note="Run: pip install httpx",
-        )
+        import aiohttp
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5.0)) as session:
+            async with session.get(f"{data_api}/trades", params={"limit": 1}) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                return CheckResult(
+                    name="Polymarket API",
+                    passed=True,
+                    value=f"HTTP {resp.status}",
+                    note=f"data-api reachable, {len(data)} record(s) returned",
+                )
     except Exception as exc:
         return CheckResult(
             name="Polymarket API",
@@ -127,28 +119,18 @@ async def check_polymarket_connectivity(host: str) -> CheckResult:
 async def check_hyperliquid_connectivity(api_url: str) -> CheckResult:
     """Check if Hyperliquid API is reachable."""
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(
-                f"{api_url}/info",
-                json={"type": "meta"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            coin_count = len(data.get("universe", []))
-            return CheckResult(
-                name="Hyperliquid API",
-                passed=True,
-                value=f"HTTP {resp.status_code}",
-                note=f"{coin_count} perpetual markets available",
-            )
-    except ImportError:
-        return CheckResult(
-            name="Hyperliquid API",
-            passed=False,
-            value="httpx not installed",
-            note="Run: pip install httpx",
-        )
+        import aiohttp
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5.0)) as session:
+            async with session.post(f"{api_url}/info", json={"type": "meta"}) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                coin_count = len(data.get("universe", []))
+                return CheckResult(
+                    name="Hyperliquid API",
+                    passed=True,
+                    value=f"HTTP {resp.status}",
+                    note=f"{coin_count} perpetual markets available",
+                )
     except Exception as exc:
         return CheckResult(
             name="Hyperliquid API",
@@ -257,7 +239,7 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
         ("nautilus_trader", None),
         ("pydantic", None),
         ("pydantic_settings", "pydantic_settings"),
-        ("httpx", None),
+        ("aiohttp", None),
         ("websockets", None),
         ("pyarrow", None),
         ("pandas", None),

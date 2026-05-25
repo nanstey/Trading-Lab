@@ -7,7 +7,6 @@ using identical strategy code as live trading (zero code-path divergence).
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import structlog
@@ -37,14 +36,14 @@ async def run_backtest_session(
     """
     from nautilus_trader.backtest.engine import BacktestEngine
     from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
-    from nautilus_trader.model.enums import OmsType, AccountType
+    from nautilus_trader.model.currencies import USDC_POS
+    from nautilus_trader.model.enums import AccountType, OmsType
     from nautilus_trader.model.identifiers import TraderId, Venue
     from nautilus_trader.model.objects import Money
-    from nautilus_trader.model.currencies import USDC_POS
 
     from nautilus_predict.config import load_config
-    from nautilus_predict.strategies.arb_complement import BinaryArbStrategy, BinaryArbConfig
-    from nautilus_predict.strategies.market_maker import MarketMakingStrategy, MarketMakingConfig
+    from nautilus_predict.strategies.arb_complement import BinaryArbConfig, BinaryArbStrategy
+    from nautilus_predict.strategies.market_maker import MarketMakingConfig, MarketMakingStrategy
 
     cfg = load_config()
 

@@ -21,8 +21,7 @@ Data is partitioned by date for efficient time-range queries.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -137,7 +136,7 @@ class DataCatalog:
             return
 
         table = pa.Table.from_pylist(records, schema=ORDERBOOK_SCHEMA)
-        date_str = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        date_str = datetime.fromtimestamp(timestamp / 1000, tz=UTC).strftime("%Y-%m-%d")
 
         token_dir = self._orderbooks_dir / self._safe_token_dir(token_id)
         token_dir.mkdir(parents=True, exist_ok=True)
@@ -240,7 +239,7 @@ class DataCatalog:
 
         # Use date of first trade for partitioning
         first_ts = records[0]["timestamp"]
-        date_str = datetime.fromtimestamp(first_ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        date_str = datetime.fromtimestamp(first_ts / 1000, tz=UTC).strftime("%Y-%m-%d")
 
         token_dir = self._trades_dir / self._safe_token_dir(token_id)
         token_dir.mkdir(parents=True, exist_ok=True)

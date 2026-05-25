@@ -16,22 +16,19 @@ from nautilus_trader.execution.messages import (
     SubmitOrder,
 )
 from nautilus_trader.live.execution_client import LiveExecutionClient
-from nautilus_trader.model.enums import LiquiditySide, OrderSide, OrderStatus, OrderType
+from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.events import (
     OrderAccepted,
     OrderCanceled,
-    OrderFilled,
     OrderRejected,
     OrderSubmitted,
 )
 from nautilus_trader.model.identifiers import (
     AccountId,
     ClientId,
-    ClientOrderId,
     VenueOrderId,
 )
 
-from nautilus_predict.venues.polymarket.auth import L2Credentials
 from nautilus_predict.venues.polymarket.client import PolymarketRestClient, PolymarketWsClient
 from nautilus_predict.venues.polymarket.orders import Side, build_limit_order
 

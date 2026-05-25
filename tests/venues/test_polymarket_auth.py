@@ -11,8 +11,6 @@ import time
 from base64 import b64encode
 from unittest.mock import patch
 
-import pytest
-
 from nautilus_predict.venues.polymarket.auth import (
     L2Credentials,
     derive_address,
@@ -40,7 +38,8 @@ class TestSignEip712:
         ts = str(int(time.time()))
         sig = sign_eip712_message(TEST_PRIVATE_KEY, TEST_ADDRESS, ts)
         assert isinstance(sig, str)
-        assert len(sig) == 130  # 65 bytes → 130 hex chars (no 0x prefix)
+        assert sig.startswith("0x")  # Polymarket requires 0x-prefixed signature
+        assert len(sig) == 132  # 0x + 65 bytes → 132 chars
 
     def test_different_timestamps_produce_different_signatures(self) -> None:
         sig1 = sign_eip712_message(TEST_PRIVATE_KEY, TEST_ADDRESS, "1700000000")
@@ -82,14 +81,12 @@ class TestSignL2Request:
 
     def test_signature_differs_by_method(self) -> None:
         creds = self._make_creds()
-        sig_get = sign_l2_request(creds, "GET", "/orders").as_dict()["POLY-SIGNATURE"]
-        sig_post = sign_l2_request(creds, "POST", "/orders").as_dict()["POLY-SIGNATURE"]
-        # Signatures may be same only if timestamps collide; mock time to isolate
+        # Use fixed timestamp to isolate the method-dependency of the signature
         with patch("nautilus_predict.venues.polymarket.auth.time") as mock_time:
             mock_time.time.return_value = 1700000000.0
-            sig_get2 = sign_l2_request(creds, "GET", "/orders").as_dict()["POLY-SIGNATURE"]
-            sig_post2 = sign_l2_request(creds, "POST", "/orders").as_dict()["POLY-SIGNATURE"]
-        assert sig_get2 != sig_post2
+            sig_get = sign_l2_request(creds, "GET", "/orders").as_dict()["POLY-SIGNATURE"]
+            sig_post = sign_l2_request(creds, "POST", "/orders").as_dict()["POLY-SIGNATURE"]
+        assert sig_get != sig_post
 
     def test_body_affects_signature(self) -> None:
         creds = self._make_creds()

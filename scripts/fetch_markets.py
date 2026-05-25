@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 
@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     import os
+
     from nautilus_predict.venues.polymarket.auth import L2Credentials
     from nautilus_predict.venues.polymarket.client import PolymarketRestClient
 

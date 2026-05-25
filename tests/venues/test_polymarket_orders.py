@@ -4,8 +4,6 @@ Unit tests for Polymarket order construction and EIP-712 signing.
 
 from __future__ import annotations
 
-import pytest
-
 from nautilus_predict.venues.polymarket.orders import (
     Side,
     SignedOrder,

@@ -17,7 +17,7 @@ identically in paper and live trading.
 Usage:
     runner = BacktestRunner(config=TradingConfig())
     runner.run(
-        strategy_class=ComplementArbStrategy,
+        strategy_class=BinaryArbStrategy,
         start_date="2024-01-01",
         end_date="2024-03-31",
         token_ids=["0xabc...", "0xdef..."],
@@ -27,11 +27,11 @@ Usage:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Type
+from typing import Any
 
-from nautilus_predict.config import TradingConfig, TradingMode
+from nautilus_predict.config import TradingConfig
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class BacktestRunner:
 
     def run(
         self,
-        strategy_class: Type[Any],
+        strategy_class: type[Any],
         start_date: str,
         end_date: str,
         token_ids: list[str],
@@ -102,8 +102,8 @@ class BacktestRunner:
         from nautilus_trader.model.enums import AccountType, OmsType
         from nautilus_trader.model.identifiers import TraderId, Venue
 
-        start_dt = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
-        end_dt = datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc)
+        start_dt = datetime.fromisoformat(start_date).replace(tzinfo=UTC)
+        end_dt = datetime.fromisoformat(end_date).replace(tzinfo=UTC)
 
         log.info(
             "Starting backtest",

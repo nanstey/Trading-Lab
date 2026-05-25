@@ -8,9 +8,9 @@ success criteria that must be met before progressing to the next.
 
 ---
 
-## Phase 0: Foundation (Current)
+## Phase 0: Foundation
 
-**Status: In Progress**
+**Status: ✅ Complete**
 
 ### Objectives
 - Establish project structure and architecture
@@ -20,26 +20,41 @@ success criteria that must be met before progressing to the next.
 - Document authentication flows
 
 ### Deliverables
-- [x] `src/nautilus_predict/` package with all modules stubbed
-- [x] `PolymarketAuth` with EIP-712 and HMAC-SHA256 signing
+- [x] `src/nautilus_predict/` package consolidated (adapters/ deleted; venues/ canonical)
+- [x] Polymarket auth (EIP-712 + HMAC-SHA256) — `venues/polymarket/auth.py`
 - [x] `KillSwitch`, `HeartbeatWatcher`, `PositionLimits` risk modules
 - [x] `DataCatalog` with PyArrow/Parquet storage
 - [x] `polyfill-rs` Rust crate skeleton
 - [x] `BacktestRunner`, `PaperRunner`, `LiveRunner` stubs
 - [x] Test suite for risk and auth modules
 - [x] Docker and docker-compose configuration
+- [x] `AGENTS.md` authoritative agent guide
+- [x] Single canonical complement-arb implementation (`BinaryArbStrategy`)
+- [x] Config attribute mismatches in `node.py` fixed
 
-### Success Criteria
+### Success Criteria — Met
 - All tests pass: `make test`
 - `check_env.py` runs cleanly without credentials
 - Code passes linting: `make lint`
 
 ---
 
+## Phase 0.5: Python Environment
+
+**Status: ✅ Complete**
+
+### Deliverables
+- [x] `uv`-managed `.venv/` with Python 3.12
+- [x] `Makefile` updated: `PYTHON := .venv/bin/python3`, `venv` target, `dev` target uses uv
+- [x] `.gitignore` includes `.venv/`
+- [x] `make check-env` returns 23/23 green (connectivity via `data-api.polymarket.com`)
+
+---
+
 ## Phase 1: Data Infrastructure
 
-**Status: Not Started**
-**Estimated: 2-3 weeks**
+**Status: 🟡 In Progress**
+**Estimated: 2-3 weeks remaining**
 
 ### Objectives
 - Ingest and store historical Polymarket market data
@@ -47,6 +62,7 @@ success criteria that must be met before progressing to the next.
 - Create replay tooling for strategy research
 
 ### Deliverables
+- [x] Step 1.1 — Confirmed Polymarket data endpoints (`data-api.polymarket.com`)
 - [ ] `PolymarketDataIngester.fetch_historical_trades()` implemented
 - [ ] `scripts/download_polymarket_data.py` working end-to-end
 - [ ] Historical data for 10+ markets covering 3+ months
@@ -74,9 +90,9 @@ success criteria that must be met before progressing to the next.
 - Validate risk module integration
 
 ### Deliverables
-- [ ] `ComplementArbStrategy` fully implemented (not just stub)
-- [ ] `BacktestRunner.run()` fully wired to NautilusTrader BacktestEngine
-- [ ] Parquet → OrderBookDeltas data loading pipeline
+- [ ] `BinaryArbStrategy` fully implemented (currently has stub logic in `arb_complement.py`)
+- [ ] `BacktestRunner.run()` fully wired to NautilusTrader `BacktestEngine`
+- [ ] `parquet_loader.py` — Parquet → `TradeTick` adapter for NautilusTrader
 - [ ] Complement arb backtest on 90 days of data
 - [ ] Market maker backtest with simulated fee model
 - [ ] Performance analytics: Sharpe ratio, max drawdown, fill rate
@@ -154,6 +170,34 @@ success criteria that must be met before progressing to the next.
 - [ ] Polymarket account funded with test USDC amount
 - [ ] `scripts/check_env.py` runs cleanly
 - [ ] `make paper` runs for 24h without issues
+
+---
+
+## Phase 5: Agentic Layer
+
+**Status: Not Started**
+**Estimated: 2-3 weeks**
+
+### Objectives
+- Build a model-agnostic agentic interface — CLI tools + decision runbooks
+- Any external agent runtime (Claude Code, another LLM, or a human operator) can drive the system by following a runbook
+- No `anthropic` SDK dependency in the codebase
+
+### Design principle
+The codebase provides composable tools and decision playbooks. The agent runtime is external and pluggable.
+
+### Deliverables
+- [ ] CLI tool surface: `scripts/eval_strategy.py`, `scripts/list_markets.py`, `scripts/promote_config.py`, `scripts/get_live_pnl.py`, `scripts/halt_trading.py` — all stateless, JSON I/O, predictable exit codes
+- [ ] `src/nautilus_predict/agent/evaluator.py` — pure-Python grid search (no LLM)
+- [ ] `runbooks/strategy-evaluator.md` — parameter sweep + promotion rules
+- [ ] `runbooks/live-anomaly-watcher.md` — PnL monitoring + escalation
+- [ ] `runbooks/new-market-onboarding.md` — new-market viability check
+- [ ] Optional: `.claude/skills/*` thin wrappers for slash-command invocation
+
+### Success Criteria
+- An external agent pointed at `runbooks/strategy-evaluator.md` runs a parameter sweep, applies the promotion decision rule, and produces a human-reviewable report
+- No `anthropic` import anywhere in the codebase
+- Each runbook is self-contained (any agent with no prior context can execute it)
 
 ---
 

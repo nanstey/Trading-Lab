@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Type
+from typing import Any
 
 from nautilus_predict.config import TradingConfig, TradingMode
 
@@ -107,7 +107,7 @@ class LiveRunner:
 
     async def run(
         self,
-        strategy_class: Type[Any],
+        strategy_class: type[Any],
         token_ids: list[str],
     ) -> None:
         """
@@ -155,42 +155,36 @@ class LiveRunner:
             },
         )
 
-        from nautilus_predict.adapters.polymarket.auth import PolymarketAuth, L2Credentials
-        from nautilus_predict.adapters.polymarket.client import PolymarketClient
-        from nautilus_predict.risk.kill_switch import KillSwitch
         from nautilus_predict.risk.heartbeat import HeartbeatWatcher
+        from nautilus_predict.risk.kill_switch import KillSwitch
         from nautilus_predict.risk.position_limits import PositionLimits
+        from nautilus_predict.venues.polymarket.auth import L2Credentials, derive_api_key
+        from nautilus_predict.venues.polymarket.client import PolymarketRestClient
 
-        auth = PolymarketAuth(
-            private_key=self._config.polymarket.private_key.get_secret_value()
-        )
-
-        # Configure L2 credentials if pre-generated
         if self._config.polymarket.has_l2_credentials:
-            auth.set_l2_credentials(L2Credentials(
+            creds = L2Credentials(
                 api_key=self._config.polymarket.api_key,
                 api_secret=self._config.polymarket.api_secret.get_secret_value(),
                 api_passphrase=self._config.polymarket.api_passphrase.get_secret_value(),
-            ))
+            )
         else:
             log.warning(
-                "L2 credentials not pre-configured. "
-                "Will attempt to derive from L1 key. "
+                "L2 credentials not pre-configured — deriving from L1 key. "
                 "Consider pre-generating and caching L2 credentials."
             )
+            creds = await derive_api_key(
+                http_url=self._config.polymarket.host,
+                private_key=self._config.polymarket.private_key.get_secret_value(),
+            )
 
-        async with PolymarketClient(config=self._config.polymarket, auth=auth) as client:
-            # Derive L2 credentials if needed
-            if not self._config.polymarket.has_l2_credentials:
-                log.info("Deriving L2 credentials from L1 key")
-                await auth.derive_l2_credentials(host=self._config.polymarket.host)
-
+        client = PolymarketRestClient(http_url=self._config.polymarket.host, creds=creds)
+        try:
             # Initialize risk controls
             kill_switch = KillSwitch(
                 daily_loss_limit_usdc=self._config.risk.daily_loss_limit_usdc,
                 cancel_all_fn=client.cancel_all_orders,
             )
-            position_limits = PositionLimits(config=self._config.risk)
+            _position_limits = PositionLimits(config=self._config.risk)
 
             async def on_heartbeat_timeout() -> None:
                 log.critical("Heartbeat timeout in LIVE mode - triggering kill switch")
@@ -202,21 +196,15 @@ class LiveRunner:
                 on_timeout=on_heartbeat_timeout,
             )
 
-            # Instantiate strategy
-            strategy = strategy_class(
-                config=self._config,
-                kill_switch=kill_switch,
-            )
-
             log.critical("LIVE TRADING ACTIVE - MONITORING ALL POSITIONS")
 
             try:
                 await heartbeat_watcher.start()
 
-                # TODO(live): Initialize NautilusTrader TradingNode
-                # TODO(live): Add Polymarket ExecutionClient
-                # TODO(live): Subscribe to live market feeds
-                # TODO(live): Start strategy event loop
+                # TODO(phase4): Initialize NautilusTrader TradingNode
+                # TODO(phase4): Add Polymarket ExecutionClient
+                # TODO(phase4): Subscribe to live market feeds
+                # TODO(phase4): Start strategy event loop
 
                 # Placeholder: keep running until cancelled
                 await asyncio.sleep(float("inf"))
@@ -233,3 +221,5 @@ class LiveRunner:
             finally:
                 await heartbeat_watcher.stop()
                 log.critical("LIVE TRADING STOPPED")
+        finally:
+            await client.close()

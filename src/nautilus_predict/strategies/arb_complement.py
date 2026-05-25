@@ -64,13 +64,12 @@ class ArbOpportunity:
     no_filled: bool = False
 
 
-@dataclass
 class BinaryArbConfig(StrategyConfig, frozen=True):
     """Configuration for the binary complement arbitrage strategy."""
 
     strategy_id: str = "BINARY-ARB-001"
-    min_profit_usdc: float = 0.02     # Minimum profit per pair (after fees)
-    max_capital_usdc: float = 1000.0  # Maximum capital to deploy per arb
+    min_profit_usdc: float = 0.02
+    max_capital_usdc: float = 1000.0
 
 
 class BinaryArbStrategy(Strategy):

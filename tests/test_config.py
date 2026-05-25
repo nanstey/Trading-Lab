@@ -7,15 +7,13 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
-import pytest
-
 from nautilus_predict.config import (
     ArbConfig,
     HedgeConfig,
-    HyperliquidConfig,
     MarketMakerConfig,
     PolymarketConfig,
     SystemConfig,
+    TradingConfig,
     TradingMode,
 )
 
@@ -28,22 +26,21 @@ class TestTradingMode:
 
 
 class TestPolymarketConfig:
-    def test_private_key_prefix_added(self) -> None:
-        with patch.dict(os.environ, {"POLYMARKET_PRIVATE_KEY": "deadbeef" * 8}):
+    def test_private_key_strip_0x(self) -> None:
+        with patch.dict(os.environ, {"POLY_PRIVATE_KEY": "0x" + "deadbeef" * 8}):
             cfg = PolymarketConfig()
-            assert cfg.private_key.get_secret_value().startswith("0x")
+            assert not cfg.private_key.get_secret_value().startswith("0x")
 
-    def test_private_key_prefix_not_doubled(self) -> None:
-        raw = "0x" + "deadbeef" * 8
-        with patch.dict(os.environ, {"POLYMARKET_PRIVATE_KEY": raw}):
+    def test_private_key_no_prefix_unchanged(self) -> None:
+        raw = "deadbeef" * 8
+        with patch.dict(os.environ, {"POLY_PRIVATE_KEY": raw}):
             cfg = PolymarketConfig()
-            assert cfg.private_key.get_secret_value().count("0x") == 1
+            assert cfg.private_key.get_secret_value() == raw
 
     def test_default_urls(self) -> None:
-        with patch.dict(os.environ, {"POLYMARKET_PRIVATE_KEY": "0x" + "ab" * 32}):
-            cfg = PolymarketConfig()
-            assert "polymarket.com" in cfg.http_url
-            assert "ws" in cfg.ws_url
+        cfg = PolymarketConfig()
+        assert "polymarket.com" in cfg.host
+        assert "ws" in cfg.ws_host
 
 
 class TestMarketMakerConfig:
@@ -83,6 +80,6 @@ class TestSystemConfig:
         assert not cfg.is_live
 
     def test_is_live_true_for_live(self) -> None:
-        with patch.dict(os.environ, {"TRADING_MODE": "live"}):
-            cfg = SystemConfig()
+        with patch.dict(os.environ, {"TRADING_MODE": "live", "LIVE_TRADING_CONFIRMED": "true"}):
+            cfg = TradingConfig()
             assert cfg.is_live

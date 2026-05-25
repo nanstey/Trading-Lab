@@ -53,6 +53,12 @@ class PolymarketConfig(BaseSettings):
         description="Polymarket WebSocket URL",
     )
 
+    # Contract address (Polygon mainnet constant — safe to default)
+    exchange_address: str = Field(
+        default="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+        description="Polymarket CLOB Exchange contract address on Polygon",
+    )
+
     @field_validator("private_key", mode="before")
     @classmethod
     def strip_0x_prefix(cls, v: str | SecretStr) -> str:
@@ -87,6 +93,10 @@ class HyperliquidConfig(BaseSettings):
     )
     ws_url: str = Field(
         default="wss://api.hyperliquid.xyz/ws", description="Hyperliquid WebSocket URL"
+    )
+    account_address: str = Field(
+        default="",
+        description="EVM wallet address (leave blank to derive from private_key)",
     )
 
     @field_validator("private_key", mode="before")
@@ -137,6 +147,34 @@ class RiskConfig(BaseSettings):
     model_config = SettingsConfigDict(populate_by_name=True, extra="ignore")
 
 
+class MarketMakerConfig(BaseSettings):
+    """Market maker strategy parameters."""
+
+    model_config = SettingsConfigDict(env_prefix="MM_", extra="ignore")
+
+    spread_bps: float = Field(default=50.0, ge=1.0, description="Bid-ask spread to quote in basis points")
+    order_size_usdc: float = Field(default=10.0, ge=1.0, description="Per-side order size in USDC")
+    max_position_usdc: float = Field(default=500.0, ge=1.0, description="Max net position per market in USDC")
+
+
+class ArbConfig(BaseSettings):
+    """Binary complement arbitrage strategy parameters."""
+
+    model_config = SettingsConfigDict(env_prefix="ARB_", extra="ignore")
+
+    min_profit_usdc: float = Field(default=0.02, ge=0.0, description="Minimum profit per arb after fees (USDC)")
+    max_capital_usdc: float = Field(default=1000.0, ge=1.0, description="Maximum capital per arb opportunity (USDC)")
+
+
+class HedgeConfig(BaseSettings):
+    """Cross-venue hedge strategy parameters (Polymarket → Hyperliquid)."""
+
+    model_config = SettingsConfigDict(env_prefix="HEDGE_", extra="ignore")
+
+    ratio: float = Field(default=0.5, ge=0.0, le=1.0, description="Fraction of Polymarket exposure to hedge (0.0–1.0)")
+    instrument: str = Field(default="BTC-USD", description="Hyperliquid instrument for hedging")
+
+
 class TradingConfig(BaseSettings):
     """
     Top-level configuration for Nautilus-Predict.
@@ -169,6 +207,9 @@ class TradingConfig(BaseSettings):
     polymarket: PolymarketConfig = Field(default_factory=PolymarketConfig)
     hyperliquid: HyperliquidConfig = Field(default_factory=HyperliquidConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    market_maker: MarketMakerConfig = Field(default_factory=MarketMakerConfig)
+    arb: ArbConfig = Field(default_factory=ArbConfig)
+    hedge: HedgeConfig = Field(default_factory=HedgeConfig)
 
     @model_validator(mode="after")
     def validate_live_mode_requirements(self) -> TradingConfig:
@@ -204,6 +245,9 @@ class TradingConfig(BaseSettings):
     def is_backtest(self) -> bool:
         """Return True if running in backtest mode."""
         return self.trading_mode == TradingMode.BACKTEST
+
+
+SystemConfig = TradingConfig
 
 
 def load_config() -> TradingConfig:

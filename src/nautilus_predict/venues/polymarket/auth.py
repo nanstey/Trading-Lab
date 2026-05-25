@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 
-
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -70,7 +69,7 @@ _CLOB_TYPES = {
     "ClobAuth": [
         {"name": "address", "type": "address"},
         {"name": "timestamp", "type": "string"},
-        {"name": "nonce", "type": "int256"},
+        {"name": "nonce", "type": "uint256"},
         {"name": "message", "type": "string"},
     ]
 }
@@ -130,7 +129,10 @@ def sign_eip712_message(
 
     signable = encode_typed_data(full_message=structured_data)
     signed = Account.sign_message(signable, private_key=private_key)
-    return signed.signature.hex()
+    sig_hex = signed.signature.hex()
+    if not sig_hex.startswith("0x"):
+        sig_hex = "0x" + sig_hex
+    return sig_hex
 
 
 def derive_address(private_key: str) -> str:
@@ -228,19 +230,35 @@ async def derive_api_key(
     signature = sign_eip712_message(private_key, address, timestamp, nonce)
 
     headers = {
-        "POLY-ADDRESS": address,
-        "POLY-SIGNATURE": signature,
-        "POLY-TIMESTAMP": timestamp,
-        "POLY-NONCE": str(nonce),
+        "POLY_ADDRESS": address,
+        "POLY_SIGNATURE": signature,
+        "POLY_TIMESTAMP": timestamp,
+        "POLY_NONCE": str(nonce),
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"{http_url}/auth/derive-api-key",
+    async def _request(method: str, path: str) -> dict:
+        async with aiohttp.ClientSession() as session, session.request(
+            method,
+            f"{http_url}{path}",
             headers=headers,
         ) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
+            return {"status": resp.status, "body": await resp.text()}
+
+    # Try derive first (idempotent if creds already exist); fall back to create.
+    result = await _request("GET", "/auth/derive-api-key")
+    if result["status"] != 200:
+        result = await _request("POST", "/auth/api-key")
+
+    if result["status"] != 200:
+        raise RuntimeError(
+            f"api-key request failed: HTTP {result['status']}\n"
+            f"URL: {http_url}/auth/api-key\n"
+            f"Request headers (signature redacted): "
+            f"POLY-ADDRESS={address} POLY-TIMESTAMP={timestamp} POLY-NONCE={nonce}\n"
+            f"Response body: {result['body']}"
+        )
+    import json
+    data = json.loads(result["body"])
 
     return L2Credentials(
         api_key=data["apiKey"],

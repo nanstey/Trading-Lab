@@ -16,11 +16,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 
 async def main() -> None:
-    import os
 
     from nautilus_predict.venues.hyperliquid.client import HyperliquidRestClient
     from nautilus_predict.venues.polymarket.auth import L2Credentials

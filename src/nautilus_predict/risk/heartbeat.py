@@ -24,8 +24,9 @@ before triggering. This balances sensitivity vs. false positives.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from typing import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 
 log = logging.getLogger(__name__)
 
@@ -117,10 +118,8 @@ class HeartbeatWatcher:
         self._running = False
         if self._task is not None and not self._task.done():
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
         self._task = None
         log.info("Heartbeat watcher stopped")
 

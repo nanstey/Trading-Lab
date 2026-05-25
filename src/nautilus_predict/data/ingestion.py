@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from nautilus_predict.adapters.polymarket.client import PolymarketClient
     from nautilus_predict.data.catalog import DataCatalog
+    from nautilus_predict.venues.polymarket.client import PolymarketRestClient
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class PolymarketDataIngester:
 
     Parameters
     ----------
-    client : PolymarketClient
+    client : PolymarketRestClient
         Authenticated (or public) Polymarket client.
     catalog : DataCatalog
         Parquet data catalog for storage.
@@ -50,7 +50,7 @@ class PolymarketDataIngester:
     ... )
     """
 
-    def __init__(self, client: PolymarketClient, catalog: DataCatalog) -> None:
+    def __init__(self, client: PolymarketRestClient, catalog: DataCatalog) -> None:
         self._client = client
         self._catalog = catalog
 
@@ -93,8 +93,8 @@ class PolymarketDataIngester:
             "Fetching historical trades",
             extra={
                 "token_id": token_id,
-                "start": datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat(),
-                "end": datetime.fromtimestamp(end_ts, tz=timezone.utc).isoformat(),
+                "start": datetime.fromtimestamp(start_ts, tz=UTC).isoformat(),
+                "end": datetime.fromtimestamp(end_ts, tz=UTC).isoformat(),
             },
         )
 

@@ -12,13 +12,12 @@ from typing import Any
 
 import structlog
 from nautilus_trader.live.data_client import LiveMarketDataClient
-from nautilus_trader.model.data import OrderBookDelta, OrderBookDeltas, TradeTick
+from nautilus_trader.model.data import OrderBookDelta, OrderBookDeltas
 from nautilus_trader.model.enums import BookAction, OrderSide, RecordFlag
 from nautilus_trader.model.identifiers import ClientId, InstrumentId
 from nautilus_trader.model.objects import Price, Quantity
 
 from nautilus_predict.venues.polymarket.client import PolymarketRestClient, PolymarketWsClient
-from nautilus_predict.venues.polymarket.auth import L2Credentials
 
 log = structlog.get_logger(__name__)
 

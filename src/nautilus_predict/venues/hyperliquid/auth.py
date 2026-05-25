@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
 from typing import Any
 
 from eth_account import Account
 from eth_account.messages import encode_typed_data
-
 
 _HL_DOMAIN = {
     "name": "Exchange",
@@ -87,7 +85,6 @@ def _build_connection_id(
     vault_address: str | None,
 ) -> bytes:
     """Keccak256 hash of the packed action + nonce + vault_address."""
-    from eth_abi import encode
     from eth_utils import keccak
 
     action_bytes = json.dumps(action, separators=(",", ":"), sort_keys=True).encode()

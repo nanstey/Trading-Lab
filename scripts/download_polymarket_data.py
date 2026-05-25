@@ -25,7 +25,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -92,8 +92,8 @@ def parse_date(date_str: str | None, default_days_ago: int = 30) -> datetime:
     """Parse a date string or return a default."""
     if date_str is None:
         from datetime import timedelta
-        return datetime.now(tz=timezone.utc) - timedelta(days=default_days_ago)
-    return datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+        return datetime.now(tz=UTC) - timedelta(days=default_days_ago)
+    return datetime.fromisoformat(date_str).replace(tzinfo=UTC)
 
 
 async def download_token(
@@ -124,7 +124,8 @@ async def download_token(
     """
     from nautilus_predict.adapters.polymarket.auth import PolymarketAuth
     from nautilus_predict.adapters.polymarket.client import PolymarketClient
-    from nautilus_predict.config import TradingConfig, PolymarketConfig
+
+    from nautilus_predict.config import PolymarketConfig
     from nautilus_predict.data.catalog import DataCatalog
     from nautilus_predict.data.ingestion import PolymarketDataIngester
 

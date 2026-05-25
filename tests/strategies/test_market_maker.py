@@ -7,20 +7,18 @@ of NautilusTrader runtime infrastructure.
 
 from __future__ import annotations
 
-import pytest
-
-from nautilus_predict.strategies.market_maker import MarketMakingConfig, MarketMakingStrategy
+from nautilus_predict.strategies.market_maker import MarketMakerParams
 
 
-class TestMarketMakingConfig:
+class TestMarketMakerParams:
     def test_default_values(self) -> None:
-        cfg = MarketMakingConfig()
+        cfg = MarketMakerParams()
         assert cfg.spread_bps == 50
         assert cfg.order_size_usdc == 10.0
         assert cfg.max_position_usdc == 500.0
 
     def test_custom_values(self) -> None:
-        cfg = MarketMakingConfig(spread_bps=100, order_size_usdc=25.0)
+        cfg = MarketMakerParams(spread_bps=100, order_size_usdc=25.0)
         assert cfg.spread_bps == 100
         assert cfg.order_size_usdc == 25.0
 

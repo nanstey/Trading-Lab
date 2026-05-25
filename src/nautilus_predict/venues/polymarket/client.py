@@ -11,9 +11,9 @@ WS docs:     https://docs.polymarket.com/#websocket
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable
 from typing import Any
 
 import aiohttp
@@ -102,6 +102,19 @@ class PolymarketRestClient:
     async def get_positions(self) -> list[dict[str, Any]]:
         """Fetch current token positions for the authenticated wallet."""
         return await self._get("/positions", auth=True)
+
+    async def heartbeat(self) -> bool:
+        """
+        Ping the Polymarket CLOB to verify connectivity.
+
+        Used by HeartbeatWatcher to detect connection drops. Returns True on
+        success, False on any network or HTTP error.
+        """
+        try:
+            await self._get("/")
+            return True
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -264,7 +277,5 @@ class PolymarketWsClient:
         self._running = False
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass

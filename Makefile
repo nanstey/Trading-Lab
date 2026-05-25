@@ -14,11 +14,12 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-PYTHON := python3
-PIP := $(PYTHON) -m pip
-RUFF := $(PYTHON) -m ruff
-PYTEST := $(PYTHON) -m pytest
-MYPY := $(PYTHON) -m mypy
+VENV    := .venv
+PYTHON  := $(VENV)/bin/python3
+PIP     := $(PYTHON) -m pip
+RUFF    := $(PYTHON) -m ruff
+PYTEST  := $(PYTHON) -m pytest
+MYPY    := $(PYTHON) -m mypy
 PRE_COMMIT := $(PYTHON) -m pre_commit
 SRC := src/nautilus_predict
 TEST_DIR := tests
@@ -72,8 +73,12 @@ help:
 # Setup
 # ---------------------------------------------------------------------------
 
+.PHONY: venv
+venv: ## Create .venv (skips if already exists)
+	@test -d $(VENV) || python3 -m venv $(VENV)
+
 .PHONY: dev
-dev: ## Install all dependencies including dev tools
+dev: venv ## Install all dependencies including dev tools
 	$(PIP) install -e ".[dev]"
 	@echo ""
 	@echo "Installation complete. Next steps:"
@@ -82,7 +87,7 @@ dev: ## Install all dependencies including dev tools
 	@echo "  3. make paper"
 
 .PHONY: install
-install: ## Install production dependencies only
+install: venv ## Install production dependencies only
 	$(PIP) install -e "."
 
 .PHONY: rust-build
