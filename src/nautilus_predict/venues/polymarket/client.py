@@ -218,20 +218,51 @@ class PolymarketWsClient:
         self._subscriptions: list[dict[str, Any]] = []
         self._running = False
         self._task: asyncio.Task[None] | None = None
+        # Active websocket — set during connect_and_run. When non-None,
+        # subscribe_* methods send the subscription frame immediately.
+        self._ws: Any = None
 
     def subscribe_market(self, assets_ids: list[str]) -> None:
-        """Queue a subscription to market-channel events for the given token IDs."""
-        self._subscriptions.append(
-            {"auth": {}, "type": "market", "assets_ids": assets_ids}
-        )
+        """
+        Subscribe to market-channel events for the given token IDs.
+
+        We coalesce all market-channel subscriptions into a SINGLE
+        `{type: market, assets_ids: [...]}` payload — PM appears to treat
+        each new subscribe message as a fresh subscription, dropping prior
+        token lists. By keeping a single growing message we ensure every
+        token is in scope after each subscribe call.
+        """
+        # Find / create the single market sub entry.
+        market_sub = None
+        for s in self._subscriptions:
+            if s.get("type") == "market":
+                market_sub = s
+                break
+        if market_sub is None:
+            market_sub = {"type": "market", "assets_ids": []}
+            self._subscriptions.append(market_sub)
+        for aid in assets_ids:
+            if aid not in market_sub["assets_ids"]:
+                market_sub["assets_ids"].append(aid)
+        self._send_now(market_sub)
 
     def subscribe_user(self, markets: list[str]) -> None:
-        """Queue a subscription to user-channel events (order updates)."""
-        # User channel requires an auth token derived from L2 creds.
+        """Subscribe to user-channel events (order updates)."""
         auth_token = self._build_ws_auth_token()
-        self._subscriptions.append(
-            {"auth": auth_token, "type": "user", "markets": markets}
-        )
+        sub = {"auth": auth_token, "type": "user", "markets": markets}
+        self._subscriptions.append(sub)
+        self._send_now(sub)
+
+    def _send_now(self, sub: dict[str, Any]) -> None:
+        """If the WS is open right now, push the subscription immediately."""
+        ws = self._ws
+        if ws is None:
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(ws.send(json.dumps(sub)))
+        except Exception as exc:
+            log.warning("ws send_now failed", error=str(exc))
 
     def _build_ws_auth_token(self) -> dict[str, str]:
         signed = sign_l2_request(self._creds, "GET", "/ws")
@@ -252,9 +283,14 @@ class PolymarketWsClient:
             try:
                 async with websockets.connect(self._ws_url) as ws:
                     log.info("Polymarket WebSocket connected", url=self._ws_url)
-                    delay = self.RECONNECT_DELAY_S  # reset on successful connect
+                    delay = self.RECONNECT_DELAY_S
+                    self._ws = ws
 
                     # Send all queued subscriptions
+                    log.info(
+                        "PM ws sending %d queued subscription(s)",
+                        len(self._subscriptions),
+                    )
                     for sub in self._subscriptions:
                         await ws.send(json.dumps(sub))
 
@@ -277,6 +313,8 @@ class PolymarketWsClient:
                 )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self.MAX_RECONNECT_DELAY_S)
+            finally:
+                self._ws = None
 
     def start(self) -> asyncio.Task[None]:
         self._task = asyncio.create_task(self.connect_and_run())

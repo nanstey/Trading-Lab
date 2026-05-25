@@ -76,9 +76,13 @@ class PolymarketDataClient(LiveMarketDataClient):
     async def _subscribe_order_book_deltas(self, command) -> None:
         """NT-side hook for `strategy.subscribe_order_book_deltas`."""
         iid = command.instrument_id
-        token = iid.symbol.value
+        token = self._token_for_instrument(iid)
+        if not token:
+            log.warning(
+                "subscribe_order_book_deltas: cannot recover token from %s", iid,
+            )
+            return
         log.info("PolymarketDataClient subscribe book deltas", token=token[:16])
-        # Add a market-channel subscription for this token.
         self._ws.subscribe_market([token])
 
     async def _subscribe_trade_ticks(self, command) -> None:
@@ -154,7 +158,23 @@ class PolymarketDataClient(LiveMarketDataClient):
     # WebSocket message handler
     # ------------------------------------------------------------------
 
-    def _handle_ws_message(self, msg: dict[str, Any]) -> None:
+    _ws_msg_count = 0
+
+    def _handle_ws_message(self, msg: Any) -> None:
+        # PM sends arrays of events on its market channel — unwrap.
+        if isinstance(msg, list):
+            for item in msg:
+                self._handle_ws_message(item)
+            return
+        if not isinstance(msg, dict):
+            log.debug("Unhandled WS message (non-dict)", msg_type=type(msg).__name__)
+            return
+        self._ws_msg_count += 1
+        if self._ws_msg_count <= 3 or self._ws_msg_count % 100 == 0:
+            log.info(
+                "PM ws msg #%d type=%s keys=%s",
+                self._ws_msg_count, msg.get("event_type"), list(msg.keys())[:6],
+            )
         event_type = msg.get("event_type") or msg.get("type")
         if event_type in ("book", "price_change"):
             self._handle_book_event(msg)
@@ -368,7 +388,7 @@ def _parse_book_level(level: dict[str, Any], side: OrderSide, instrument=None):
     When `instrument` is provided, prices/sizes are clamped to the
     instrument's precision grid (PM tick = 0.01, qty precision = 2).
     """
-    from nautilus_trader.model.book import BookOrder
+    from nautilus_trader.model.data import BookOrder
 
     try:
         px = float(level.get("price", 0))
