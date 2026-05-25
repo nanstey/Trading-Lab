@@ -253,6 +253,10 @@ def main() -> int:
         help="Drop grid points below this trade count before walk-forward",
     )
     p.add_argument(
+        "--workers", type=int, default=4,
+        help="Parallel grid+WF backtest workers (default 4; 1 = serial)",
+    )
+    p.add_argument(
         "--hypotheses-dir", type=Path, default=Path("research/hypotheses"),
     )
     p.add_argument(
@@ -306,18 +310,38 @@ def main() -> int:
         data_start.date(), train_end.date(),
     )
 
-    # 1) Grid sweep over training window
-    grid: list[GridResult] = []
+    # 1) Grid sweep over training window — parallelise across workers.
     names = list(space.keys())
-    for combo in itertools.product(*(space[n] for n in names)):
-        params = dict(zip(names, combo, strict=False))
+    combos = [
+        dict(zip(names, combo, strict=False))
+        for combo in itertools.product(*(space[n] for n in names))
+    ]
+
+    def _run_grid_point(params):
         try:
             pnl, sharpe, max_dd, n_trades = run_single_backtest(
                 args.slug, params, data_start, train_end, args.initial_capital_usdc,
             )
+            return params, (pnl, sharpe, max_dd, n_trades), None
         except Exception as exc:
-            log.warning("grid backtest failed params=%s err=%s", params, exc)
+            return params, None, str(exc)
+
+    grid: list[GridResult] = []
+    workers = max(1, args.workers)
+    if workers == 1:
+        results_iter = (_run_grid_point(p) for p in combos)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(_run_grid_point, p) for p in combos]
+            results_iter = (f.result() for f in as_completed(futs))
+
+    for params, metrics, err in results_iter:
+        if err is not None:
+            log.warning("grid backtest failed params=%s err=%s", params, err)
             continue
+        pnl, sharpe, max_dd, n_trades = metrics
         budget.consume("backtests", db_path=args.db)
         lifecycle.record_experiment(
             slug=args.slug,
@@ -373,34 +397,63 @@ def main() -> int:
     if all(w[1] < last30_start for w in windows):
         windows[-1] = (last30_start, data_end)
 
+    # Walk-forward jobs are independent — fan out across the same worker
+    # pool. Each job = (candidate, window).
+    wf_jobs = [
+        (cand, w_start, w_end)
+        for cand in candidates
+        for (w_start, w_end) in windows
+    ]
+
+    def _run_wf_job(job):
+        cand, w_start, w_end = job
+        try:
+            pnl, sharpe, max_dd, n_trades = run_single_backtest(
+                args.slug, cand.params, w_start, w_end,
+                args.initial_capital_usdc,
+            )
+            return (cand, w_start, w_end, (pnl, sharpe, max_dd, n_trades), None)
+        except Exception as exc:
+            return (cand, w_start, w_end, None, str(exc))
+
+    if workers == 1:
+        wf_iter = (_run_wf_job(j) for j in wf_jobs)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(_run_wf_job, j) for j in wf_jobs]
+            wf_iter = (f.result() for f in as_completed(futs))
+
+    # Bucket WF results by candidate so we can construct WalkForwardResult.
+    per_cand: dict[int, list[dict]] = {id(c): [] for c in candidates}
+    for cand, w_start, w_end, metrics, err in wf_iter:
+        if err is not None:
+            log.warning("WF backtest failed %s %s..%s: %s",
+                        cand.params, w_start, w_end, err)
+            continue
+        pnl, sharpe, max_dd, n_trades = metrics
+        budget.consume("backtests", db_path=args.db)
+        lifecycle.record_experiment(
+            slug=args.slug,
+            params={**cand.params, "_wf_window": f"{w_start.date()}..{w_end.date()}"},
+            data_start=str(w_start.date()),
+            data_end=str(w_end.date()),
+            sharpe=sharpe, max_dd=max_dd, fill_rate=0.0,
+            pnl=pnl, n_trades=n_trades, db_path=args.db,
+        )
+        per_cand[id(cand)].append({
+            "start": str(w_start.date()), "end": str(w_end.date()),
+            "pnl": pnl, "sharpe": sharpe, "max_dd": max_dd,
+            "n_trades": n_trades,
+            "_w_start": w_start,  # for sort
+        })
+
     wf_results: list[WalkForwardResult] = []
     for cand in candidates:
-        oos_windows = []
-        for w_start, w_end in windows:
-            try:
-                pnl, sharpe, max_dd, n_trades = run_single_backtest(
-                    args.slug, cand.params, w_start, w_end,
-                    args.initial_capital_usdc,
-                )
-            except Exception as exc:
-                log.warning("WF backtest failed %s %s..%s: %s",
-                            cand.params, w_start, w_end, exc)
-                continue
-            budget.consume("backtests", db_path=args.db)
-            lifecycle.record_experiment(
-                slug=args.slug,
-                params={**cand.params, "_wf_window": f"{w_start.date()}..{w_end.date()}"},
-                data_start=str(w_start.date()),
-                data_end=str(w_end.date()),
-                sharpe=sharpe, max_dd=max_dd, fill_rate=0.0,
-                pnl=pnl, n_trades=n_trades, db_path=args.db,
-            )
-            oos_windows.append({
-                "start": str(w_start.date()), "end": str(w_end.date()),
-                "pnl": pnl, "sharpe": sharpe, "max_dd": max_dd,
-                "n_trades": n_trades,
-            })
-
+        oos_windows = sorted(per_cand[id(cand)], key=lambda w: w["_w_start"])
+        for w in oos_windows:
+            w.pop("_w_start", None)
         if not oos_windows:
             continue
         recent = oos_windows[-1]

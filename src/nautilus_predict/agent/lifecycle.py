@@ -303,6 +303,29 @@ def transition(
         )
         conn.execute("COMMIT")
 
+    # Emit structured event so the operator agent / SMS bridge can pick it up.
+    # Severity escalates for promotions, halts, retirements.
+    from nautilus_predict.agent.events import emit_event
+
+    sev = "info"
+    promoted = to_state in (State.PAPER.value, State.LIVE.value)
+    halted = to_state in (State.HALTED.value, State.RETIRED.value)
+    if promoted or halted:
+        sev = "warn" if promoted else "critical"
+    emit_event(
+        type="lifecycle_transition",
+        summary=f"{slug}: {from_state} → {to_state} ({actor})",
+        severity=sev,
+        slug=slug,
+        data={
+            "from_state": from_state,
+            "to_state": to_state,
+            "actor": actor,
+            "reason": reason,
+            "rejection_category": rejection_category,
+        },
+    )
+
 
 def history(slug: str, db_path: Path = DEFAULT_DB_PATH) -> list[dict[str, Any]]:
     with _open(db_path) as conn:

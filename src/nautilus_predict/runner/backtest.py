@@ -475,13 +475,43 @@ class BacktestRunner:
             else 0
         )
 
-        sharpe, max_dd_pct = self._equity_metrics(account_df)
-
-        # Complement-arb PnL: cash spent on arbs is recoverable at $1/share
-        # at resolution; the genuine edge is `1.0 - combined_ask_at_fill`.
-        # For backtests on unresolved markets we mark each held YES+NO pair
-        # at its theoretical resolution value of $1.00 minus fees paid.
-        pnl = self._terminal_pnl(engine, orders_df, venue)
+        # Per-pair PnL series — pairs entries with closes FIFO per
+        # instrument, treats matched YES+NO pairs at $1.00 at resolution
+        # for arb-style strategies. The per-pair Sharpe is meaningful
+        # (mean / stdev / sqrt(N)); the cash-equity Sharpe is not (it dips
+        # monotonically as capital is deployed and never recovers in
+        # hold-to-resolution strategies).
+        per_pair_pnls = self._per_pair_pnl_series(orders_df)
+        if per_pair_pnls:
+            import math
+            mean = sum(per_pair_pnls) / len(per_pair_pnls)
+            if len(per_pair_pnls) > 1:
+                var = sum((p - mean) ** 2 for p in per_pair_pnls) / (len(per_pair_pnls) - 1)
+                stdev = math.sqrt(var)
+            else:
+                stdev = 0.0
+            sharpe = (mean / stdev * math.sqrt(len(per_pair_pnls))) if stdev > 0 else 0.0
+            pnl = sum(per_pair_pnls)
+            # Max DD from the running cumulative pair-PnL curve.
+            equity = []
+            cum = 0.0
+            for p in per_pair_pnls:
+                cum += p
+                equity.append(cum)
+            peak = equity[0]
+            max_dd_abs = 0.0
+            for v in equity:
+                peak = max(peak, v)
+                dd = (v - peak)
+                if dd < max_dd_abs:
+                    max_dd_abs = dd
+            initial_capital = 10_000.0  # for percentage normalisation
+            max_dd_pct = (max_dd_abs / initial_capital) * 100.0
+        else:
+            # Fallback to legacy cash-equity sharpe + terminal PnL for
+            # strategies where pair-pairing doesn't make sense (no fills).
+            sharpe, max_dd_pct = self._equity_metrics(account_df)
+            pnl = self._terminal_pnl(engine, orders_df, venue)
         return MarketBacktestResult(
             condition_id=condition_id,
             question=question,
@@ -496,6 +526,110 @@ class BacktestRunner:
             fill_rate=(n_fills / n_orders) if n_orders else 0.0,
             kill_switch_triggered=False,
         )
+
+    def _per_pair_pnl_series(self, orders_df: pd.DataFrame) -> list[float]:
+        """
+        FIFO-pair fills per instrument to produce a realised PnL series.
+
+        For a binary-arb backtest, each instrument is traded BUY-only and
+        held to resolution — there are no opposite-side closes mid-window.
+        We treat each fill as one "pair-half"; the realised pair-PnL is
+        `(1.0 - avg_fill_price) * filled_qty`, i.e. the genuine arb edge.
+
+        For mean-revert / two-sided strategies, this still computes a
+        meaningful series: each opposite-side close fills the previous
+        entry FIFO; the realised PnL is `(close_px - entry_px) * qty`
+        for longs (inverted for shorts).
+        """
+        if orders_df is None or orders_df.empty:
+            return []
+        try:
+            df = orders_df.copy()
+            df["filled_qty"] = pd.to_numeric(df.get("filled_qty", 0), errors="coerce").fillna(0)
+            df["avg_px"] = pd.to_numeric(df.get("avg_px", 0), errors="coerce").fillna(0)
+            df = df[df["filled_qty"] > 0]
+            if df.empty:
+                return []
+        except Exception:
+            return []
+
+        # Order rows by event time so FIFO is honoured.
+        ts_col = None
+        for cand in ("ts_init", "ts_event", "ts_last", "timestamp"):
+            if cand in df.columns:
+                ts_col = cand
+                break
+        if ts_col is not None:
+            df = df.sort_values(ts_col)
+
+        # Distinct instruments — if there are exactly 2, we infer
+        # arb-style pairing: each matched YES + NO pair pays $1.00 at
+        # resolution → realised pair-PnL = (1 - yes_px - no_px) * qty.
+        # This treats the arb as a SINGLE position (matched share-pair),
+        # not as two independent winners. FIFO across the two legs.
+        instruments = df["instrument_id"].unique() if "instrument_id" in df.columns else []
+        if len(instruments) == 2:
+            from collections import deque as _deque
+
+            yes_iid, no_iid = instruments[0], instruments[1]
+            yes_q: _deque = _deque()
+            no_q: _deque = _deque()
+            pnls_arb: list[float] = []
+            for row in df.itertuples(index=False):
+                px = float(row.avg_px)
+                qty = float(row.filled_qty)
+                if str(row.instrument_id) == str(yes_iid):
+                    queue, other = yes_q, no_q
+                else:
+                    queue, other = no_q, yes_q
+                # If the other leg has open shares, pair them off.
+                while qty > 0 and other:
+                    other_leg = other[0]
+                    match = min(qty, other_leg["qty"])
+                    if str(row.instrument_id) == str(yes_iid):
+                        pnls_arb.append(
+                            (1.0 - px - other_leg["px"]) * match
+                        )
+                    else:
+                        pnls_arb.append(
+                            (1.0 - other_leg["px"] - px) * match
+                        )
+                    qty -= match
+                    other_leg["qty"] -= match
+                    if other_leg["qty"] <= 0:
+                        other.popleft()
+                if qty > 0:
+                    queue.append({"px": px, "qty": qty})
+            return pnls_arb
+
+        # General path: per-instrument FIFO entry/close pairing.
+        from collections import defaultdict, deque
+
+        open_by_iid: dict[str, deque] = defaultdict(deque)
+        pnls: list[float] = []
+        for row in df.itertuples(index=False):
+            iid = str(row.instrument_id)
+            side = str(getattr(row, "order_side", "")).upper()
+            px = float(row.avg_px)
+            qty = float(row.filled_qty)
+            q = open_by_iid[iid]
+            # Match against first opposite-side open fill.
+            matched_idx = None
+            for i, opener in enumerate(q):
+                if str(opener["side"]) != side:
+                    matched_idx = i
+                    break
+            if matched_idx is not None:
+                opener = q[matched_idx]
+                match_qty = min(qty, opener["qty"])
+                if opener["side"] == "BUY":
+                    pnls.append((px - opener["px"]) * match_qty)
+                else:
+                    pnls.append((opener["px"] - px) * match_qty)
+                del q[matched_idx]
+            else:
+                q.append({"side": side, "px": px, "qty": qty})
+        return pnls
 
     def _terminal_pnl(self, engine, orders_df: pd.DataFrame, venue) -> float:
         """

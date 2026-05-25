@@ -77,6 +77,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     from nautilus_predict.agent import lifecycle
+    from nautilus_predict.agent.events import emit_event
     from nautilus_predict.risk.kill_switch import read_flag
 
     initial = _env_float("WATCHER_INITIAL_CAPITAL_USDC", 10_000.0)
@@ -149,6 +150,19 @@ def main() -> int:
                         rejection_category="single_day_drawdown",
                         db_path=args.db,
                     )
+                    # Watcher-specific event (the lifecycle transition above
+                    # also emits one, but this gives operators a typed signal
+                    # they can filter on).
+                    emit_event(
+                        type="watcher_halt",
+                        summary=(
+                            f"{h.slug} HALTED: single-day loss ${today_pnl:.2f} "
+                            f"<= ${sd_threshold:.2f}"
+                        ),
+                        severity="warn",
+                        slug=h.slug,
+                        data=entry,
+                    )
                 except Exception as exc:
                     entry["error"] = str(exc)
             halted.append(entry)
@@ -184,6 +198,16 @@ def main() -> int:
                         actor=args.actor,
                         rejection_category=f"drawdown_{window_days}d_{int(dd_limit_pct)}pct",
                         db_path=args.db,
+                    )
+                    emit_event(
+                        type="watcher_retire",
+                        summary=(
+                            f"{h.slug} RETIRED: {window_days}d drawdown "
+                            f"${cum_pnl:.2f} <= ${dd_threshold:.2f}"
+                        ),
+                        severity="critical",
+                        slug=h.slug,
+                        data=entry,
                     )
                 except Exception as exc:
                     entry["error"] = str(exc)

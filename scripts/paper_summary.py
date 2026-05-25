@@ -132,6 +132,31 @@ def main() -> int:
         db_path=args.db,
     )
 
+    # Emit a paper_summary event so the operator-briefing agent sees
+    # progress at a glance.
+    try:
+        from nautilus_predict.agent.events import emit_event
+
+        emit_event(
+            type="paper_summary",
+            summary=(
+                f"{args.slug} {args.date}: {len(pairs)} pairs, "
+                f"realised PnL ${total_pnl:.2f}"
+            ),
+            severity="info",
+            slug=args.slug,
+            data={
+                "date": args.date,
+                "n_signals": len(signals),
+                "n_pairs": len(pairs),
+                "n_unmatched": len(unmatched),
+                "realised_pnl_usdc": round(total_pnl, 4),
+                "report_path": str(out_path),
+            },
+        )
+    except Exception:
+        pass
+
     print(json.dumps({
         "ok": True,
         "slug": args.slug,

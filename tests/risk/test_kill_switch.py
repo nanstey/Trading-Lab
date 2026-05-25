@@ -21,14 +21,19 @@ from nautilus_predict.risk.kill_switch import KillSwitch, KillSwitchTriggered
 @pytest.fixture(autouse=True)
 def _isolate_kill_switch_flag(tmp_path, monkeypatch):
     """
-    Each test gets a temp-dir kill_switch flag path automatically.
+    Each test gets a temp-dir kill_switch flag AND events log path.
 
-    Without this, `trigger()` writes to `data/.kill_switch` and breaks the
-    real environment + other tests in the same session.
+    Without this, `trigger()` writes to `data/.kill_switch` and
+    `logs/events.jsonl` — polluting both the real environment and other
+    tests in the same session.
     """
     flag_path = tmp_path / ".kill_switch"
+    events_path = tmp_path / "events.jsonl"
     monkeypatch.setattr(
         "nautilus_predict.risk.kill_switch.DEFAULT_FLAG_PATH", flag_path
+    )
+    monkeypatch.setattr(
+        "nautilus_predict.agent.events.DEFAULT_EVENTS_PATH", events_path
     )
 
 

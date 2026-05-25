@@ -75,6 +75,17 @@ def clear_flag(path: Path = DEFAULT_FLAG_PATH) -> bool:
     """Remove the kill-switch flag file. Returns True if a file was removed."""
     if path.exists():
         path.unlink()
+        try:
+            from nautilus_predict.agent.events import emit_event
+
+            emit_event(
+                type="kill_switch_cleared",
+                summary="global kill switch cleared",
+                severity="info",
+                data={"flag_path": str(path)},
+            )
+        except Exception:
+            pass
         return True
     return False
 
@@ -210,6 +221,18 @@ class KillSwitch:
             write_flag(reason, actor="kill_switch", path=self._flag_path)
         except Exception as exc:
             log.error("failed to persist kill_switch flag: %s", exc)
+        # Emit structured event (critical — operator agent should forward).
+        try:
+            from nautilus_predict.agent.events import emit_event
+
+            emit_event(
+                type="kill_switch_tripped",
+                summary=f"global kill switch tripped: {reason}",
+                severity="critical",
+                data={"reason": reason, "flag_path": str(self._flag_path)},
+            )
+        except Exception:
+            pass
 
         log.critical(
             "KILL SWITCH TRIGGERED - ALL TRADING HALTED",
