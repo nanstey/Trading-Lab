@@ -705,132 +705,319 @@ make live
 
 ---
 
-## Phase 5: Agentic Layer
+# Plan: Phase 5 Expanded — Autoresearch Loop for Trading Strategies
 
-### Objective
-Expose a clean, model-agnostic agentic interface: CLI tools the codebase implements + runbooks an external agent runtime (Claude Code, Cursor, a future LLM, or a human operator) can follow. No `anthropic` SDK dependency in the codebase; no model lock-in.
+## Context
 
-**Prerequisite:** Phase 2 (backtesting) must be fully working before designing this. The agent's primary tool is `make backtest`.
+You want an agentic system that *systematically* discovers, codes, tests, and graduates trading strategies — with persistent memory so the system stops re-trying ideas that have already been ruled out. The existing [bootstrap spec](../../../Code/Trading-Lab/specs/2026-05-24_bootstrap.md) Phase 5 already plans the foundation (CLI tools, `StrategyEvaluator`, three runbooks). This plan **expands Phase 5 in place** to add: a fully-autonomous discovery loop, agent-written strategy code with hard guardrails, a lifecycle state machine, and a SQLite+Markdown experiment memory. Phases 0–4 must still complete first — agents can't responsibly auto-test strategies until backtest/paper plumbing actually works.
 
-**Design principle:** the codebase provides composable tools and decision playbooks. The agent runtime is external and pluggable.
+**Your scoping choices (locked in via clarification):**
+1. Expand Phase 5 in place — existing 5.1–5.5 fold into the larger plan
+2. Fully autonomous discovery crawl (no human watchlist gate)
+3. Codegen agent writes `strategies/<slug>.py`, gated by smoke test + lookahead check
+4. SQLite for structured state, Markdown for human-readable hypothesis/post-mortem writeups
+
+**Why these choices need extra guardrails:** Autonomous discovery + autonomous codegen is the highest-risk path for an *automated trader*. The two failure modes that quietly kill alpha factories are (a) **lookahead bias** in agent-written code (strategy peeks at future data, posts amazing Sharpe, dies in paper), and (b) **multiple-testing inflation** (test 200 strategies, 10 look "profitable" by chance). The design below treats both as first-class concerns rather than afterthoughts.
 
 ---
 
-### Step 5.1 — Define Agentic Tool Surface
+## Target Architecture (one screen)
 
-**[AGENT]** Create CLI scripts that wrap core operations as one-shot, stateless tools. Each takes args, emits structured JSON to stdout, returns predictable exit codes, and never prompts interactively.
+```
+research/
+  hypotheses/<slug>.md         human-readable hypothesis + writeup per strategy
+  postmortems/<slug>.md        why a strategy was rejected (linked from hypothesis)
+  experiments.db               SQLite — structured truth (lifecycle + results)
+  budget.json                  daily token/backtest budget counter
+  sources.yaml                 discovery watchlist (arxiv cats, SSRN feeds, blogs)
 
-Required tools:
-- `scripts/eval_strategy.py --strategy <name> --params <json> --markets <ids> --start <date> --end <date>` → JSON: `{sharpe, pnl, max_dd, fill_rate, trades, kill_switch_triggered}`
-- `scripts/list_markets.py [--active]` → JSON list of available `(condition_id, yes_token, no_token)` tuples from DataCatalog
-- `scripts/promote_config.py --strategy <name> --params <json>` → writes config to `.env`, exits 0 on success
-- `scripts/get_live_pnl.py [--window-hours N]` → JSON: `{realized_pnl, unrealized_pnl, fills, kill_switch_state}` from recent logs
-- `scripts/halt_trading.py --reason <text>` → triggers `KillSwitch` via filesystem flag, exits 0
+src/nautilus_predict/
+  strategies/<slug>.py         agent-written or human-written strategy code
+  agent/
+    lifecycle.py               only module that writes to experiments.db
+    experiment_log.py          structured backtest result persistence
+    discovery.py               source poller + dedup
+    codegen_guards.py          lookahead static analysis, import allowlist
+    evaluator.py               (existing plan) grid + walk-forward
+    budget.py                  LLM/backtest budget tracker
 
-**Verification (5.1):**
+scripts/                       agentic CLI surface (JSON in, JSON out, exit codes)
+  research_cli.py              query experiments.db; one entry point for all lifecycle reads
+  propose_hypothesis.py        write a hypothesis MD + DB row, status=PROPOSED
+  generate_strategy.py         (calls external agent runtime) → strategies/<slug>.py
+  smoke_test_strategy.py       synthetic-data smoke + lookahead AST check
+  transition_lifecycle.py      move a strategy between states atomically
+  eval_strategy.py             (existing plan) grid eval, writes to experiments.db
+  promote_config.py            (existing plan) writes .env, dry-run default
+
+runbooks/                      task descriptions for any agent runtime
+  discover-strategies.md       crawl sources.yaml, dedup, queue new hypotheses
+  codegen-strategy.md          drain PROPOSED queue, write code, smoke-test
+  test-strategy.md             drain BACKTEST queue, run eval, apply decision rules
+  optimize-strategy.md         drain OPTIMIZE queue, walk-forward, pick winner
+  live-anomaly-watcher.md      (existing plan) monitor live PnL
+  strategy-evaluator.md        (existing plan) hand-driven sweep
+```
+
+---
+
+## Lifecycle State Machine
+
+States stored in SQLite. All transitions go through `agent/lifecycle.py` → atomic transaction.
+
+```
+PROPOSED  ──codegen──▶  CODEGEN  ──smoke──▶  SMOKE_PASS  ──backtest──▶  BACKTEST
+                          │                                                  │
+                          ▼ smoke_fail                                       ▼
+                       REJECTED                                  ┌──Sharpe<0──REJECTED
+                                                                 ├──marginal──SHELVED
+                                                                 └──Sharpe≥1──OPTIMIZE
+                                                                                │
+                                                                                ▼
+                                                            WALK_FORWARD ◀──sweep
+                                                                  │
+                                                ┌─OOS Sharpe<0.7──REJECTED
+                                                ├─OOS Sharpe<1.0──SHELVED
+                                                └─OOS Sharpe≥1.0──PAPER_READY
+                                                                  │
+                                            [YOU approve] ────────┘
+                                                  │
+                                                  ▼
+                                                PAPER  ──24h clean──▶  LIVE_READY
+                                                                          │
+                                                            [YOU only] ───┘
+                                                                  │
+                                                                  ▼
+                                                                LIVE  ──drawdown──▶  RETIRED
+```
+
+**Hard rule: no agent may transition into `PAPER_READY → PAPER` or `LIVE_READY → LIVE`.** Those gates are `[YOU]`. Phase 4's `LIVE_TRADING_CONFIRMED=true` rule extends here: agents can drive everything up to `PAPER_READY` and `LIVE_READY` but a human flips the switch.
+
+---
+
+## Expanded Phase 5 Steps
+
+### 5.1 — Agentic CLI tool surface
+**[AGENT]** Build the scripts listed above. Each one: argparse → does its thing → `print(json.dumps(...))` → exits 0/non-zero. No interactive prompts, no progress bars. Existing planned tools (`eval_strategy.py`, `list_markets.py`, `promote_config.py`, `get_live_pnl.py`, `halt_trading.py`) remain.
+
+**Verification:** `python scripts/research_cli.py list --state BACKTEST` returns valid JSON.
+
+---
+
+### 5.2 — Experiment DB schema + lifecycle module
+**[AGENT]** Create [research/experiments.db](../../../Code/Trading-Lab/research/) (SQLite) with:
+
+```sql
+CREATE TABLE hypotheses (
+  slug TEXT PRIMARY KEY,
+  source_url TEXT, source_type TEXT,           -- 'arxiv'|'ssrn'|'blog'|'manual'
+  summary TEXT, summary_embedding BLOB,         -- for dedup
+  state TEXT NOT NULL,                          -- enum from state machine
+  rejection_reason TEXT, rejection_category TEXT,
+  parent_slug TEXT,                             -- for derivative strategies
+  created_at TIMESTAMP, updated_at TIMESTAMP
+);
+CREATE TABLE experiments (
+  id INTEGER PRIMARY KEY, slug TEXT, params_json TEXT,
+  data_start TIMESTAMP, data_end TIMESTAMP,
+  sharpe REAL, max_dd REAL, fill_rate REAL, pnl REAL, n_trades INTEGER,
+  walk_forward_oos_sharpe REAL,                 -- NULL until WF run
+  code_hash TEXT, data_hash TEXT,               -- reproducibility
+  kill_switch_triggered BOOLEAN, created_at TIMESTAMP,
+  FOREIGN KEY(slug) REFERENCES hypotheses(slug)
+);
+CREATE TABLE lifecycle_transitions (
+  id INTEGER PRIMARY KEY, slug TEXT,
+  from_state TEXT, to_state TEXT, reason TEXT,
+  actor TEXT,                                   -- 'agent:codegen'|'agent:tester'|'user'
+  timestamp TIMESTAMP, FOREIGN KEY(slug) REFERENCES hypotheses(slug)
+);
+CREATE TABLE budget_ledger (                    -- daily LLM token + backtest counters
+  date TEXT PRIMARY KEY, llm_tokens INTEGER, backtests INTEGER,
+  paper_starts INTEGER, live_starts INTEGER
+);
+```
+
+`agent/lifecycle.py` is the **only** module allowed to `INSERT INTO lifecycle_transitions` or `UPDATE hypotheses SET state=...`. Every transition logs `from_state, to_state, reason, actor`.
+
+**Verification:** `python scripts/transition_lifecycle.py --slug test --to SMOKE_PASS --reason "manual"` then `research_cli.py history --slug test` shows the transition.
+
+---
+
+### 5.3 — Discovery loop
+**[AGENT]** Build `agent/discovery.py`. The runbook `runbooks/discover-strategies.md` is the agent-facing entry point.
+
+**Sources** (default `sources.yaml`):
+- arxiv `q-fin.TR`, `q-fin.PM`, `q-fin.ST` — last 7 days
+- Quantocracy RSS
+- Papers-with-code "trading" / "market-microstructure" tags
+- Configurable blog list (start: Hudson & Thames, ML for Trading, Robot Wealth)
+- A `manual_inbox/` directory you can drop URLs into
+
+**Dedup strategy (layered):**
+1. **Exact:** SHA256 of source URL — skip if already in hypotheses table
+2. **Semantic:** embed the extracted summary with `sentence-transformers/all-MiniLM-L6-v2` (small, local, no API). Cosine similarity > 0.85 against existing hypotheses → mark as `parent_slug` derivative rather than new
+3. **Negative-results check:** before queueing, look up `rejection_category` field across past rejections. If new hypothesis matches a previously-rejected category (e.g., "momentum on PM binaries"), the new hypothesis MD includes a `Prior attempts` section listing past failures. The discovery agent then **drops** the hypothesis unless its summary explicitly addresses the prior failure mode.
+
+**Rate limit:** Max 5 new hypotheses queued per day (configurable). Prevents queue floods.
+
+**Output per hypothesis:**
+- `research/hypotheses/<slug>.md` with frontmatter: `source`, `created`, `parent_slug`, `prior_attempts`, body has Hypothesis / Edge Claimed / Required Data / Parameter Space / Acceptance Criteria
+- SQLite row, `state=PROPOSED`
+
+**Verification:** Run discovery on a seeded sources.yaml with one arxiv paper. Confirm hypothesis MD + DB row created; running it again creates nothing.
+
+---
+
+### 5.4 — Codegen + smoke loop (the risky part)
+**[AGENT]** `runbooks/codegen-strategy.md`: drain `PROPOSED` → produce `strategies/<slug>.py` + `tests/strategies/test_<slug>.py`. Transition `PROPOSED → CODEGEN → SMOKE_PASS|REJECTED`.
+
+**Mandatory guardrails enforced by `scripts/smoke_test_strategy.py`:**
+1. **Import allowlist (AST scan):** strategy file may only import from `nautilus_trader.*`, `nautilus_predict.*`, `numpy`, `pandas`, stdlib. No `requests`, `urllib`, `subprocess`, `os.system`, no relative imports of weird stuff. Blocks data leakage and code escape.
+2. **Lookahead static check (AST):** `on_book_update(self, snapshot)` and similar handlers may only reference `self`, their args, and module-level constants. Reject if the function reads from any module-level mutable that's populated by a later timestamp (heuristic: any attribute named `*_future*`, `*_next*`, or that's modified inside `on_*` callbacks and read by earlier ones in event-time order).
+3. **Synthetic smoke test:** generate 1 hour of synthetic ticks (random walk around 0.5 for a binary token), instantiate strategy with default config, feed ticks, assert: completes without exception, emits ≥0 orders, no order has `ts > current_tick_ts`.
+4. **Required test file:** `tests/strategies/test_<slug>.py` must exist and pass under `pytest`.
+5. **Code hash recorded:** `code_hash = sha256(strategy.py)` written to the next experiment row so any future result is tied to the exact code.
+
+Failure → `REJECTED` with `rejection_category` in `{import_violation, lookahead_suspected, smoke_crash, test_missing, test_fail}`. Post-mortem MD auto-generated with the specific AST node / exception that failed.
+
+**Verification:** Hand-craft a deliberately-lookahead-biased strategy file and confirm the smoke script catches it.
+
+---
+
+### 5.5 — Testing loop
+**[AGENT]** `runbooks/test-strategy.md`: drain `SMOKE_PASS` → run `eval_strategy.py` over the hypothesis's declared parameter grid → write experiments rows → transition based on decision rules:
+
+| Sharpe (in-sample) | Max DD | Action | New state |
+|---|---|---|---|
+| < 0 | any | reject | REJECTED (`unprofitable`) |
+| 0 ≤ S < 0.5 | any | shelf | SHELVED (`marginal_is`) |
+| 0.5 ≤ S < 1.0 | > 25% | reject | REJECTED (`high_dd`) |
+| 0.5 ≤ S < 1.0 | ≤ 25% | shelf | SHELVED (`marginal_is`) |
+| ≥ 1.0 | ≤ 20% | promote | OPTIMIZE |
+
+**Multiple-testing correction:** the Sharpe threshold above scales by the number of distinct hypotheses tested in the last 30 days using Bonferroni on a baseline of α=0.05. `agent/evaluator.py:adjusted_sharpe_threshold(n_tests)` returns the corrected cutoff. The decision table uses the corrected number, not the raw 1.0.
+
+---
+
+### 5.6 — Optimize + walk-forward
+**[AGENT]** `runbooks/optimize-strategy.md`: drain `OPTIMIZE`. Fine-grained parameter sweep. Pick winner by **out-of-sample walk-forward Sharpe**, never in-sample. Default split: 70% train / 30% test, rolled across 3 non-overlapping windows.
+
+Transition rules (using OOS Sharpe):
+- OOS Sharpe ≥ 1.0 and OOS Sharpe ≥ 0.6 × IS Sharpe → `PAPER_READY`
+- OOS Sharpe ≥ 0.7 but < 1.0 → `SHELVED` (`marginal_oos`)
+- OOS Sharpe < 0.7 → `REJECTED` (`overfit`) ← the most important rejection category; explicitly catches the "looked great in-sample, dies out-of-sample" failure
+
+---
+
+### 5.7 — Paper / live promotion (HUMAN GATE)
+**[YOU]** `research_cli.py review --state PAPER_READY` shows a digest: hypothesis summary, best params, IS/OOS Sharpe, walk-forward stability plot. You decide to promote. Same gate at `LIVE_READY → LIVE` (re-uses Phase 4's `LIVE_TRADING_CONFIRMED=true` rule).
+
+No agent may write to `.env` for paper/live promotion. `promote_config.py` defaults to `--dry-run`; the `--apply` flag is wrapped in a runbook that says "only invoke if a human just said yes in this session."
+
+---
+
+### 5.8 — Negative-results memory (the "don't try again" requirement)
+This is implicit in the lifecycle but worth stating: every `REJECTED` transition produces:
+1. `research/postmortems/<slug>.md` — what was tried, what failed, which guardrail / threshold caught it
+2. SQLite row with `rejection_category` (one of ~10 enum values)
+3. The discovery loop (5.3) consults this on every new hypothesis to (a) annotate similar new ideas with `prior_attempts`, (b) outright drop if rejection_category matches and the new hypothesis doesn't explicitly address the failure mode
+
+This is what stops the system from spinning forever on "momentum on prediction markets" once you've shown it doesn't work.
+
+---
+
+### 5.9 — Budget + concurrency
+**[AGENT]** `agent/budget.py` tracks LLM tokens spent and backtests run per day. Each runbook checks budget before starting work. Hard caps default to: 100k tokens/day, 50 backtests/day, 1 paper promotion/week, 0 live promotions (human-only).
+
+**Concurrency:** Agents acquire a sqlite-level `BEGIN IMMEDIATE` lock when transitioning a hypothesis's state. Two testing loops cannot grab the same slug. No external lock files needed.
+
+---
+
+### 5.10 — Continuous operation (optional)
+**[AGENT]** Cron entries (or `loop` skill invocations) for scheduled drainage:
+- Discovery: `0 9 * * *` (daily 09:00)
+- Codegen: `0 */2 * * *` (every 2h)
+- Testing: `0 */6 * * *` (every 6h)
+- Optimize: `0 3 * * *` (daily 03:00)
+- All check budget first and exit if exhausted.
+
+---
+
+### 5.11 — End-to-end validation
+**[YOU]** Seed the system with a known-bad hypothesis ("trade the daily open/close gap on PM binaries"). Run discovery → codegen → smoke → backtest → expect `REJECTED` with category `unprofitable`. Verify post-mortem MD written, SQLite row correct. Then seed a known-good hypothesis (the existing complement-arb logic, repackaged as a new hypothesis MD) and verify it promotes to `PAPER_READY` cleanly.
+
+---
+
+## Critical files to be created (modify-list)
+
+| Path | Why |
+|---|---|
+| [src/nautilus_predict/agent/lifecycle.py](../../../Code/Trading-Lab/src/nautilus_predict/agent/) | Only writer to experiments.db state |
+| [src/nautilus_predict/agent/experiment_log.py](../../../Code/Trading-Lab/src/nautilus_predict/agent/) | Records backtest results with code+data hashes |
+| [src/nautilus_predict/agent/discovery.py](../../../Code/Trading-Lab/src/nautilus_predict/agent/) | Source polling + dedup |
+| [src/nautilus_predict/agent/codegen_guards.py](../../../Code/Trading-Lab/src/nautilus_predict/agent/) | AST checks (lookahead, import allowlist) |
+| [src/nautilus_predict/agent/budget.py](../../../Code/Trading-Lab/src/nautilus_predict/agent/) | Token + backtest budget |
+| [src/nautilus_predict/agent/evaluator.py](../../../Code/Trading-Lab/src/nautilus_predict/agent/) | Already in Phase 5.2 plan — add walk-forward + Bonferroni helpers |
+| [scripts/research_cli.py](../../../Code/Trading-Lab/scripts/) | Query/inspect facade over experiments.db |
+| [scripts/smoke_test_strategy.py](../../../Code/Trading-Lab/scripts/) | Runs the 5.4 guardrails |
+| [scripts/transition_lifecycle.py](../../../Code/Trading-Lab/scripts/) | Single atomic-write entry for state changes |
+| [scripts/propose_hypothesis.py](../../../Code/Trading-Lab/scripts/) | CLI to add hypothesis from inbox file |
+| [scripts/generate_strategy.py](../../../Code/Trading-Lab/scripts/) | Wraps agent runtime to draft strategy code |
+| [runbooks/discover-strategies.md](../../../Code/Trading-Lab/runbooks/) | Discovery loop instructions |
+| [runbooks/codegen-strategy.md](../../../Code/Trading-Lab/runbooks/) | Codegen + smoke loop |
+| [runbooks/test-strategy.md](../../../Code/Trading-Lab/runbooks/) | Testing loop with decision rules |
+| [runbooks/optimize-strategy.md](../../../Code/Trading-Lab/runbooks/) | Walk-forward optimization |
+| [research/sources.yaml](../../../Code/Trading-Lab/research/) | Discovery source config |
+| [research/experiments.db](../../../Code/Trading-Lab/research/) | SQLite, gitignored |
+| Update [AGENTS.md](../../../Code/Trading-Lab/AGENTS.md) | Document the lifecycle, what agents may/may not do |
+| Update [Makefile](../../../Code/Trading-Lab/Makefile) | `make research-discover`, `make research-test`, `make research-status` |
+| Update [pyproject.toml](../../../Code/Trading-Lab/pyproject.toml) | Add `sentence-transformers` (or defer — see Open Questions) |
+| Update [specs/2026-05-24_bootstrap.md](../../../Code/Trading-Lab/specs/2026-05-24_bootstrap.md) | Replace existing Phase 5 with the expanded version |
+
+**Existing functions/utilities to reuse:**
+- `DataCatalog` ([src/nautilus_predict/data/catalog.py](../../../Code/Trading-Lab/src/nautilus_predict/data/catalog.py)) for `data_hash` calc (hash of `(token_ids, start, end, get_data_summary())`)
+- `KillSwitch` ([src/nautilus_predict/risk/kill_switch.py](../../../Code/Trading-Lab/src/nautilus_predict/risk/kill_switch.py)) — extend to also halt the research loop, not just trading
+- `NautilusPredictStrategy` base class ([src/nautilus_predict/strategies/base.py](../../../Code/Trading-Lab/src/nautilus_predict/strategies/base.py)) — every agent-written strategy inherits from this; codegen template should be skeletoned around it
+- `BinaryArbConfig` pattern ([src/nautilus_predict/strategies/arb_complement.py](../../../Code/Trading-Lab/src/nautilus_predict/strategies/arb_complement.py)) — every new strategy needs a paired `*Config(StrategyConfig)`; codegen agent must produce both
+
+---
+
+## Open questions I'd flag before implementing
+
+1. **Embedding model for dedup.** `sentence-transformers` adds ~500MB of model weights. Alternatives: skip semantic dedup (URL hash only), or call a hosted embedding API (re-introduces SDK lock-in the spec deliberately avoids).
+2. **Where does the codegen agent itself run?** `generate_strategy.py` needs *some* LLM runtime to actually draft Python. Three options: (a) shell out to `claude` CLI, (b) shell out to any model via a thin local wrapper, (c) leave it as a runbook step a human Claude Code session executes. Phase 5 of the existing spec leans (c); fully-autonomous mode wants (a) or (b).
+3. **Are you OK with all-strategies-tested-equally?** The discovery agent could prioritize by claimed Sharpe in the source paper, by source credibility, or by required data availability. The plan above is FIFO; smarter prioritization is a v2.
+4. **Live drawdown trigger to `RETIRED`.** Threshold value (e.g., -10% from peak) needs a number — left unspecified above.
+
+---
+
+## Verification (end-to-end)
+
 ```bash
-python scripts/eval_strategy.py --strategy arb --params '{"min_profit_usdc": 0.02}' --markets <YES,NO> --start 2024-11-01 --end 2024-12-01
-# Should output a JSON object — no prose, no progress bars
+# 0. Build out
+make install                                                # adds new deps
+python -c "from nautilus_predict.agent.lifecycle import init_db; init_db()"
+
+# 1. Seed a hypothesis manually
+python scripts/propose_hypothesis.py --file specs/test_hypothesis.md
+python scripts/research_cli.py list --state PROPOSED        # shows 1 row
+
+# 2. Codegen + smoke
+python scripts/generate_strategy.py --slug test-momentum
+python scripts/smoke_test_strategy.py --slug test-momentum  # exits 0 or rejects
+
+# 3. Backtest (uses existing eval_strategy.py wired to experiments.db)
+python scripts/eval_strategy.py --slug test-momentum --start 2024-11-01 --end 2024-12-01
+
+# 4. Inspect
+python scripts/research_cli.py show --slug test-momentum    # current state, last transition, last result
+python scripts/research_cli.py history --slug test-momentum # all transitions
+
+# 5. Negative-results check
+python scripts/research_cli.py list --state REJECTED --category overfit
+
+# 6. (Optional) Loop test — let it run autonomously for 24h with budget caps and verify nothing escapes the human gate
 ```
 
----
-
-### Step 5.2 — Implement Strategy Evaluator
-
-**[AGENT]** Create `src/nautilus_predict/agent/evaluator.py`:
-
-```python
-class StrategyEvaluator:
-    """Runs backtest grid search and ranks strategy configs by Sharpe ratio."""
-
-    def run_grid(
-        self,
-        strategy_class,
-        param_grid: dict[str, list],
-        token_pairs: list[tuple[str, str]],
-        start: datetime,
-        end: datetime,
-    ) -> list[dict]:  # sorted by sharpe descending
-        ...
-```
-
-This is pure Python — no LLM, no agent. It's the foundation any agent loop builds on, and is independently useful for hand-driven parameter sweeps.
-
-`scripts/eval_strategy.py` (from Step 5.1) is the thin CLI wrapper over this class.
-
----
-
-### Step 5.3 — Author Agent Runbooks
-
-**[AGENT]** Create markdown runbooks in `runbooks/`. Each runbook is self-contained and can be handed to any agent runtime as the task description.
-
-Required structure per runbook:
-- **Task**: what the agent is being asked to do
-- **Available tools**: which `scripts/*.py` commands to use, with example invocations
-- **Decision rules**: explicit thresholds and branching logic
-- **Success criteria**: how the agent knows it's done
-- **Escalation**: when to halt and report to a human
-
-Initial runbooks to create:
-
-- `runbooks/strategy-evaluator.md` — "Run a parameter sweep for strategy X over date range Y. Promote the best config to paper if Sharpe > 1.0 AND max DD < 20%. Otherwise report ranked results without promoting."
-- `runbooks/live-anomaly-watcher.md` — "Check live PnL every N minutes. If realized loss > $X or fill rate < Y%, call halt_trading.py and escalate."
-- `runbooks/new-market-onboarding.md` — "Given a new market token_id, run a 30-day backtest with default params. Report viability."
-
-**Verification (5.3):**
-- Each runbook is self-contained — an agent with no prior context can execute it
-- Reading any runbook tells you exactly which CLI tools it depends on
-
----
-
-### Step 5.4 — Author Claude Code Skills (optional)
-
-**[AGENT]** Create `.claude/skills/` entries that wrap runbooks for tighter Claude Code integration. Each skill points at a runbook and provides a slash-command surface:
-
-- `.claude/skills/evaluate-strategy.md` — invokes the strategy-evaluator runbook from `/evaluate-strategy <args>`
-- `.claude/skills/check-live-health.md` — quick health check via `get_live_pnl.py`
-- `.claude/skills/promote-best-config.md` — runs evaluator and prompts before promoting
-
-Skills are convenience, not architecture. The runbooks + CLI tools remain the canonical interface and work with any agent runtime. Skip this step if you're not using Claude Code as the primary runtime.
-
----
-
-### Step 5.5 — Validate End-to-End
-
-**[YOU]** Point an external agent (Claude Code, manual operator, or any LLM-driven runtime) at `runbooks/strategy-evaluator.md` with a sample task. Verify:
-- The agent reads the runbook and discovers the right tools
-- It runs the evaluator over a sensible parameter grid
-- It applies the promotion decision rule correctly (promotes only if Sharpe > 1.0)
-- It produces a final report a human can review
-
-**Verification (5.5):**
-```bash
-# Example Claude Code invocation:
-claude "Follow runbooks/strategy-evaluator.md to optimize arb strategy params on Nov 2024 data"
-# OR if .claude/skills/evaluate-strategy.md exists:
-claude /evaluate-strategy --strategy arb --start 2024-11-01 --end 2024-12-01
-```
-
----
-
-## Ongoing: Monitoring & Alerting
-
-**[AGENT]** Add structured metric emission to `strategies/arb_complement.py`:
-- Emit JSON log line on every arb scan: `{"event": "arb_scan", "opportunities_found": N, "executed": M}`
-- Emit on every fill: `{"event": "fill", "pnl": X, "cumulative_pnl": Y}`
-
-**[YOU]** Set up log-tailing dashboard of choice (tail -f, Grafana + Loki, or Datadog). The structured log output is the monitoring surface.
-
----
-
-## Summary of Agent vs. User Responsibilities
-
-| Phase | Agent Does | You Do |
-|-------|-----------|--------|
-| 0 | Fix node.py, config, remove dead code | Run `make test`, confirm clean |
-| 0.5 | Update Makefile for uv, add `.gitignore` entry | Install uv, run `make dev`, confirm `make check-env` passes |
-| 1 | Implement historical fetch, wire WS ingestion | Discover API endpoints, provide token IDs, run download |
-| 2 | Build Parquet adapter, wire BacktestEngine | Interpret Sharpe results, approve progression |
-| 3 | Complete WS handlers, wire PaperRunner + TradingNode | Provide credentials, confirm WS message format, run 24h |
-| 4 | Wire LiveRunner, graceful shutdown | Complete pre-live checklist, fund account, approve go-live |
-| 5 | Build CLI tools, evaluator, runbooks, skills | Validate by pointing an external agent at the runbook |
+The final acceptance test is the one in 5.11: seed a known-bad and a known-good, watch the system rejection-reason the first and promote the second to `PAPER_READY` without manual intervention.
