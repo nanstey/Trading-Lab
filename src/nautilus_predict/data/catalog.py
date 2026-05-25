@@ -27,6 +27,7 @@ from typing import Any
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 log = logging.getLogger(__name__)
@@ -187,10 +188,9 @@ class DataCatalog:
 
         for pf in parquet_files:
             table = pq.read_table(pf)
-            # Filter by timestamp range
-            mask = (
-                (table.column("timestamp") >= pa.scalar(start_ms))
-                & (table.column("timestamp") <= pa.scalar(end_ms))
+            mask = pc.and_(
+                pc.greater_equal(table.column("timestamp"), pa.scalar(start_ms)),
+                pc.less_equal(table.column("timestamp"), pa.scalar(end_ms)),
             )
             filtered = table.filter(mask)
             if filtered.num_rows > 0:
@@ -251,6 +251,86 @@ class DataCatalog:
             extra={"token_id": token_id, "count": len(records), "date": date_str},
         )
 
+    def read_trades(
+        self,
+        token_id: str,
+        start: datetime,
+        end: datetime,
+    ) -> pd.DataFrame:
+        """Read historical trades for a token over a time range."""
+        token_dir = self._trades_dir / self._safe_token_dir(token_id)
+        if not token_dir.exists():
+            return pd.DataFrame(
+                columns=["timestamp", "token_id", "trade_id", "side", "price", "size", "fee"]
+            )
+        parquet_files = sorted(token_dir.glob("*.parquet"))
+        if not parquet_files:
+            return pd.DataFrame(
+                columns=["timestamp", "token_id", "trade_id", "side", "price", "size", "fee"]
+            )
+        tables = []
+        start_ms = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        for pf in parquet_files:
+            table = pq.read_table(pf)
+            mask = pc.and_(
+                pc.greater_equal(table.column("timestamp"), pa.scalar(start_ms)),
+                pc.less_equal(table.column("timestamp"), pa.scalar(end_ms)),
+            )
+            filtered = table.filter(mask)
+            if filtered.num_rows > 0:
+                tables.append(filtered)
+        if not tables:
+            return pd.DataFrame(
+                columns=["timestamp", "token_id", "trade_id", "side", "price", "size", "fee"]
+            )
+        combined = pa.concat_tables(tables)
+        df = combined.to_pandas()
+        return df.sort_values("timestamp").reset_index(drop=True)
+
+    def validate_dataset(
+        self,
+        token_id: str,
+        start: datetime,
+        end: datetime,
+        max_gap_seconds: int = 300,
+    ) -> dict[str, Any]:
+        """
+        Validate trade-data coverage for a token over a window.
+
+        Reports gaps > `max_gap_seconds`, total records, and the actual
+        date range observed. Returned dict is safe to JSON-encode.
+        """
+        df = self.read_trades(token_id, start, end)
+        report: dict[str, Any] = {
+            "token_id": token_id,
+            "start_iso": start.isoformat(),
+            "end_iso": end.isoformat(),
+            "record_count": int(len(df)),
+            "gaps": [],
+            "max_gap_seconds": 0,
+            "coverage_first_ts": None,
+            "coverage_last_ts": None,
+        }
+        if df.empty:
+            return report
+
+        df_sorted = df.sort_values("timestamp")
+        ts_seconds = (df_sorted["timestamp"] / 1000).astype(int).tolist()
+        report["coverage_first_ts"] = int(ts_seconds[0])
+        report["coverage_last_ts"] = int(ts_seconds[-1])
+        gaps: list[dict[str, int]] = []
+        max_gap = 0
+        for prev, curr in zip(ts_seconds[:-1], ts_seconds[1:], strict=False):
+            delta = curr - prev
+            if delta > max_gap:
+                max_gap = delta
+            if delta > max_gap_seconds:
+                gaps.append({"from": prev, "to": curr, "gap_seconds": delta})
+        report["gaps"] = gaps
+        report["max_gap_seconds"] = max_gap
+        return report
+
     def list_available_markets(self) -> list[str]:
         """
         Return a list of token IDs that have data in the catalog.
@@ -299,10 +379,16 @@ class DataCatalog:
 
     @staticmethod
     def _safe_token_dir(token_id: str) -> str:
-        """Convert a token ID to a filesystem-safe directory name."""
-        # Strip 0x prefix and take first 16 chars to keep paths short
-        safe = token_id.lstrip("0x").lstrip("0X")
-        return safe[:32] if len(safe) > 32 else safe
+        """
+        Convert a token ID to a filesystem-safe directory name.
+
+        Polymarket token IDs are 77-digit decimal numbers (uint256). All
+        characters are filesystem-safe, so the full ID is preserved as the
+        directory name — important because `list_available_markets()` returns
+        these names and downstream code expects them to round-trip back into
+        the raw token_id (e.g., for hitting the CLOB book endpoint).
+        """
+        return token_id.lstrip("0x").lstrip("0X")
 
     @staticmethod
     def _append_or_write(

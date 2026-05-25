@@ -1,15 +1,26 @@
 """
 Polymarket Data Ingestion.
 
-Handles both historical (REST-based) and real-time (WebSocket-based)
-data collection, writing all data to the Parquet catalog.
+Historical and real-time market data collection. Writes everything to the
+Parquet DataCatalog so downstream backtests and analyses have a single source
+of truth.
 
-Two modes:
-1. Historical batch ingestion: Fetches paginated REST history
-2. Continuous streaming: Subscribes to WebSocket feeds
+Two flows:
 
-Used by scripts/download_polymarket_data.py for one-off data pulls
-and by the paper/live runners for real-time data archival.
+1. **Historical batch** — `fetch_historical_trades(condition_id, ...)` paginates
+   `data-api.polymarket.com/trades?market=<conditionId>` with offset paging.
+   That endpoint returns trades for BOTH legs (YES + NO) of a binary market
+   in one stream; each row has an `asset` field (token ID) so the catalog
+   partitions correctly. `fetch_orderbook_snapshots(token_id, ...)` polls
+   `clob.polymarket.com/book?token_id=<id>` on an interval (live-forward only
+   — there's no historical-book endpoint).
+
+2. **Continuous streaming** — `run_continuous(token_ids)` subscribes to the
+   Polymarket market WS channel via `PolymarketWsClient` and persists book
+   snapshots + trade prints as they arrive.
+
+Used by `scripts/download_polymarket_data.py` for one-off pulls and by the
+paper/live runners for in-process archival.
 """
 
 from __future__ import annotations
@@ -19,269 +30,343 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
+
 if TYPE_CHECKING:
     from nautilus_predict.data.catalog import DataCatalog
     from nautilus_predict.venues.polymarket.client import PolymarketRestClient
 
 log = logging.getLogger(__name__)
 
+DATA_API_BASE = "https://data-api.polymarket.com"
+CLOB_BASE = "https://clob.polymarket.com"
+
 
 class PolymarketDataIngester:
     """
-    Fetches and stores Polymarket market data.
+    Fetch and persist Polymarket market data.
 
-    Supports historical data pulls via REST and real-time streaming
-    via WebSocket. All data is persisted to the DataCatalog.
+    The ingester intentionally talks to the public data-api and CLOB book
+    endpoints directly (aiohttp) rather than going through `PolymarketRestClient`
+    — those endpoints don't require auth and live on different hosts.
 
     Parameters
     ----------
-    client : PolymarketRestClient
-        Authenticated (or public) Polymarket client.
+    client : PolymarketRestClient | None
+        Authenticated CLOB client, used only for the live WebSocket subscription
+        path. Pass None when only doing historical pulls.
     catalog : DataCatalog
-        Parquet data catalog for storage.
-
-    Example
-    -------
-    >>> ingester = PolymarketDataIngester(client=poly_client, catalog=catalog)
-    >>> await ingester.fetch_historical_trades(
-    ...     token_id="0xabc",
-    ...     start_ts=1700000000,
-    ...     end_ts=1700086400,
-    ... )
+        Parquet catalog for persistence.
     """
 
-    def __init__(self, client: PolymarketRestClient, catalog: DataCatalog) -> None:
+    def __init__(
+        self,
+        catalog: DataCatalog,
+        client: PolymarketRestClient | None = None,
+        request_concurrency: int = 5,
+    ) -> None:
         self._client = client
         self._catalog = catalog
+        self._semaphore = asyncio.Semaphore(request_concurrency)
+        self._session: aiohttp.ClientSession | None = None
+
+    async def __aenter__(self) -> PolymarketDataIngester:
+        self._session = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=32),
+            timeout=aiohttp.ClientTimeout(total=30),
+        )
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(limit=32),
+                timeout=aiohttp.ClientTimeout(total=30),
+            )
+        return self._session
+
+    # ------------------------------------------------------------------
+    # Historical: trades (data-api, condition-scoped)
+    # ------------------------------------------------------------------
 
     async def fetch_historical_trades(
         self,
-        token_id: str,
+        condition_id: str,
         start_ts: int,
         end_ts: int,
         page_size: int = 500,
     ) -> int:
         """
-        Fetch historical trade records via REST and write to catalog.
+        Fetch historical trades for a condition (both YES + NO legs).
 
-        Paginates through all available trades in the given time window
-        and writes them to the Parquet catalog in batches.
+        Iterates `GET data-api.polymarket.com/trades?market=<conditionId>` with
+        offset pagination. Trades are returned newest-first; iteration stops
+        when the page is empty or every trade on the page predates `start_ts`.
 
         Parameters
         ----------
-        token_id : str
-            Polymarket outcome token ID.
+        condition_id : str
+            Market condition ID (0x-prefixed hex).
         start_ts : int
-            Start Unix timestamp (seconds).
+            Inclusive Unix timestamp lower bound (seconds).
         end_ts : int
-            End Unix timestamp (seconds).
+            Inclusive Unix timestamp upper bound (seconds).
         page_size : int
-            Number of trades to fetch per page.
+            Records per page (max 500 per data-api).
 
         Returns
         -------
         int
-            Total number of trades fetched and stored.
-
-        TODO(live): Confirm Polymarket trade history endpoint path
-        TODO(live): Handle API rate limiting with exponential backoff
+            Total trades written to the catalog.
         """
-        total_trades = 0
-        cursor: str | None = None
-
+        session = await self._ensure_session()
+        total = 0
+        offset = 0
         log.info(
-            "Fetching historical trades",
-            extra={
-                "token_id": token_id,
-                "start": datetime.fromtimestamp(start_ts, tz=UTC).isoformat(),
-                "end": datetime.fromtimestamp(end_ts, tz=UTC).isoformat(),
-            },
+            "fetch_historical_trades start condition=%s start=%s end=%s",
+            condition_id,
+            datetime.fromtimestamp(start_ts, tz=UTC).isoformat(),
+            datetime.fromtimestamp(end_ts, tz=UTC).isoformat(),
         )
 
         while True:
-            # TODO(live): Call actual trade history endpoint
-            # The Polymarket API endpoint for historical trades is:
-            # GET /trades?asset_id={token_id}&after={start_ts}&before={end_ts}
-            # Currently stubbed - wire to actual endpoint when confirmed
-            params: dict[str, Any] = {
-                "asset_id": token_id,
-                "after": start_ts * 1000,
-                "before": end_ts * 1000,
-                "limit": page_size,
+            params = {
+                "market": condition_id,
+                "limit": str(page_size),
+                "offset": str(offset),
             }
-            if cursor:
-                params["next_cursor"] = cursor
+            async with self._semaphore:
+                try:
+                    async with session.get(f"{DATA_API_BASE}/trades", params=params) as resp:
+                        if resp.status == 400:
+                            log.info(
+                                "data-api offset cap reached at offset=%s (this is normal)",
+                                offset,
+                            )
+                            break
+                        resp.raise_for_status()
+                        page = await resp.json()
+                except Exception as exc:
+                    log.error("trades fetch failed offset=%s err=%s", offset, exc)
+                    break
 
-            try:
-                # TODO(live): Replace with actual client method
-                # response = await self._client.get_trades(**params)
-                log.warning(
-                    "Historical trade fetch not yet implemented",
-                    extra={"token_id": token_id},
-                )
+            if not isinstance(page, list) or not page:
                 break
 
-            except Exception as exc:
-                log.error(
-                    "Error fetching trades page",
-                    extra={"token_id": token_id, "cursor": cursor, "error": str(exc)},
+            # Bucket by token (asset). Records may include both legs.
+            by_token: dict[str, list[dict[str, Any]]] = {}
+            all_older = True
+            for row in page:
+                ts = int(row.get("timestamp", 0))
+                if ts > end_ts:
+                    continue
+                if ts >= start_ts:
+                    all_older = False
+                else:
+                    continue
+
+                asset = str(row.get("asset", ""))
+                if not asset:
+                    continue
+                by_token.setdefault(asset, []).append(
+                    {
+                        "timestamp": ts * 1000,  # store ms
+                        "trade_id": row.get("transactionHash", ""),
+                        "side": str(row.get("side", "")),
+                        "price": float(row.get("price", 0.0)),
+                        "size": float(row.get("size", 0.0)),
+                        "fee": 0.0,
+                    }
                 )
+
+            for token, trades in by_token.items():
+                self._catalog.write_trades(token, trades)
+                total += len(trades)
+
+            if total and total % 1000 == 0:
+                log.info("fetch_historical_trades progress total=%s", total)
+
+            if len(page) < page_size:
+                # Last page
+                break
+            if all_older:
+                # Entire page older than start_ts — no point paging further
                 break
 
-        return total_trades
+            offset += page_size
 
-    async def fetch_historical_orderbook_snapshots(
+        log.info("fetch_historical_trades done condition=%s total=%s", condition_id, total)
+        return total
+
+    # ------------------------------------------------------------------
+    # Historical: book snapshots (CLOB, token-scoped, polled forward)
+    # ------------------------------------------------------------------
+
+    async def fetch_orderbook_snapshots(
         self,
         token_id: str,
         start_ts: int,
         end_ts: int,
-        interval_secs: int = 60,
+        interval_sec: int = 60,
     ) -> int:
         """
-        Fetch periodic order book snapshots for a time range.
+        Poll the CLOB `/book` endpoint and persist snapshots.
 
-        Polls the REST order book endpoint at regular intervals to
-        build a historical record of book state.
+        Polymarket does not expose historical book data, so this is only useful
+        for forward-looking captures (start_ts in the future or "now"). For
+        backtests on historical data, see the reconstruction helper in
+        `data/parquet_loader.py`.
 
         Parameters
         ----------
         token_id : str
-            Polymarket outcome token ID.
+            Outcome token ID.
         start_ts : int
-            Start Unix timestamp (seconds).
+            Earliest snapshot timestamp (seconds). If in the past, sleeps are
+            short-circuited and we capture immediately.
         end_ts : int
-            End Unix timestamp (seconds).
-        interval_secs : int
-            Interval between snapshots in seconds (default: 60).
+            Last snapshot timestamp (seconds).
+        interval_sec : int
+            Polling interval.
 
         Returns
         -------
         int
-            Total number of snapshots stored.
-
-        TODO(live): The CLOB API may not support historical book snapshots.
-        Consider recording real-time book state via subscribe_market() instead.
-        TODO(live): Evaluate if Polymarket provides CLOB history endpoints.
+            Snapshots persisted.
         """
-        log.warning(
-            "Historical orderbook snapshots may not be supported by Polymarket API",
-            extra={"token_id": token_id},
-        )
-        total_snapshots = 0
+        session = await self._ensure_session()
+        captured = 0
+        loop = asyncio.get_running_loop()
 
-        current_ts = start_ts
-        while current_ts <= end_ts:
+        while True:
+            now = int(loop.time())  # monotonic — used only for sleep math
+            wall = int(datetime.now(tz=UTC).timestamp())
+            if wall > end_ts:
+                break
+            if wall < start_ts:
+                await asyncio.sleep(min(start_ts - wall, interval_sec))
+                continue
+
             try:
-                book_data = await self._client.get_order_book(token_id=token_id)
-
-                bids = [
-                    (float(level["price"]), float(level["size"]))
-                    for level in book_data.get("bids", [])
-                ]
-                asks = [
-                    (float(level["price"]), float(level["size"]))
-                    for level in book_data.get("asks", [])
-                ]
-
-                self._catalog.write_orderbook_snapshot(
-                    token_id=token_id,
-                    timestamp=current_ts * 1000,
-                    bids=bids,
-                    asks=asks,
-                )
-                total_snapshots += 1
-
-                if current_ts + interval_secs > end_ts:
-                    break
-
-                # Rate limiting: be polite to the API
-                await asyncio.sleep(0.5)
-                current_ts += interval_secs
-
+                async with self._semaphore, session.get(
+                    f"{CLOB_BASE}/book", params={"token_id": token_id}
+                ) as resp:
+                    resp.raise_for_status()
+                    book = await resp.json()
             except Exception as exc:
-                log.error(
-                    "Error fetching orderbook snapshot",
-                    extra={"token_id": token_id, "timestamp": current_ts, "error": str(exc)},
-                )
-                await asyncio.sleep(5.0)
-                current_ts += interval_secs
+                log.warning("book fetch failed token=%s err=%s", token_id[:16], exc)
+                await asyncio.sleep(interval_sec)
+                continue
 
-        log.info(
-            "Orderbook snapshot fetch complete",
-            extra={"token_id": token_id, "total_snapshots": total_snapshots},
-        )
-        return total_snapshots
+            bids = [
+                (float(b["price"]), float(b["size"])) for b in book.get("bids", [])
+            ]
+            asks = [
+                (float(a["price"]), float(a["size"])) for a in book.get("asks", [])
+            ]
+            ts_ms = int(book.get("timestamp", wall * 1000))
+            self._catalog.write_orderbook_snapshot(token_id, ts_ms, bids, asks)
+            captured += 1
+            log.debug("book snapshot token=%s levels=%d", token_id[:16], len(bids) + len(asks))
+
+            await asyncio.sleep(interval_sec)
+            _ = now  # silence unused
+
+        return captured
+
+    # ------------------------------------------------------------------
+    # Live streaming
+    # ------------------------------------------------------------------
 
     async def run_continuous(self, token_ids: list[str]) -> None:
         """
-        Subscribe to WebSocket feeds and stream data to the catalog.
+        Subscribe to live market WS feeds for `token_ids` and persist messages.
 
-        Subscribes to market channels for all provided token IDs and
-        writes incoming order book updates to the Parquet catalog.
-        Runs indefinitely until cancelled.
-
-        Parameters
-        ----------
-        token_ids : list[str]
-            List of token IDs to subscribe to.
-
-        TODO(live): Handle multiple simultaneous WebSocket connections
-        TODO(live): Implement graceful restart on connection errors
+        Requires `self._client` (a `PolymarketRestClient`) — the WS subscription
+        is queued through its companion `PolymarketWsClient`.
         """
-        log.info(
-            "Starting continuous data ingestion",
-            extra={"token_count": len(token_ids), "token_ids": token_ids[:5]},
+        if self._client is None:
+            raise RuntimeError("run_continuous() requires a PolymarketRestClient")
+
+        log.info("continuous ingest start tokens=%d", len(token_ids))
+
+        from nautilus_predict.venues.polymarket.auth import L2Credentials
+        from nautilus_predict.venues.polymarket.client import PolymarketWsClient
+
+        # Reuse the REST client's L2 creds for the WS auth path (user channel).
+        # Market-channel subscriptions don't strictly need auth.
+        creds = getattr(self._client, "_creds", None)
+        if creds is None:
+            creds = L2Credentials(api_key="", api_secret="", api_passphrase="")
+
+        ws = PolymarketWsClient(
+            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
+            creds=creds,
+            on_message=lambda m: asyncio.create_task(self._on_market_message(m)),
         )
-
-        tasks = [
-            asyncio.create_task(
-                self._client.subscribe_market(token_id, self._on_market_message),
-                name=f"ingest-{token_id[:8]}",
-            )
-            for token_id in token_ids
-        ]
-
-        try:
-            await asyncio.gather(*tasks)
-        except asyncio.CancelledError:
-            for task in tasks:
-                task.cancel()
-            log.info("Continuous ingestion stopped")
+        ws.subscribe_market(token_ids)
+        await ws.connect_and_run()
 
     async def _on_market_message(self, message: dict[str, Any]) -> None:
         """
-        Handle incoming WebSocket market messages and persist to catalog.
+        Handle one inbound WS message from the market channel.
 
-        Parameters
-        ----------
-        message : dict
-            Raw WebSocket message from Polymarket market channel.
+        Polymarket emits a few flavours:
+          - `event_type: "book"`  — full book snapshot with bids/asks
+          - `event_type: "price_change"` — incremental change (delta)
+          - `event_type: "last_trade_price"` — trade print
         """
-        msg_type = message.get("event_type", "")
+        ev = message.get("event_type", "")
+        token_id = message.get("asset_id") or message.get("market") or ""
+        if not token_id:
+            return
 
-        if msg_type in ("book", "price_change"):
-            token_id = message.get("asset_id", "")
-            if not token_id:
-                return
-
-            timestamp = int(message.get("timestamp", 0))
+        if ev == "book":
+            ts = int(message.get("timestamp", 0) or 0)
             bids = [
-                (float(b["price"]), float(b["size"]))
-                for b in message.get("bids", [])
+                (float(b["price"]), float(b["size"])) for b in message.get("bids", [])
             ]
             asks = [
-                (float(a["price"]), float(a["size"]))
-                for a in message.get("asks", [])
+                (float(a["price"]), float(a["size"])) for a in message.get("asks", [])
             ]
+            self._catalog.write_orderbook_snapshot(token_id, ts, bids, asks)
 
-            self._catalog.write_orderbook_snapshot(
-                token_id=token_id,
-                timestamp=timestamp,
-                bids=bids,
-                asks=asks,
+        elif ev == "price_change":
+            # Incremental update — persist as a snapshot with just the changed side.
+            ts = int(message.get("timestamp", 0) or 0)
+            changes = message.get("changes", [])
+            bids: list[tuple[float, float]] = []
+            asks: list[tuple[float, float]] = []
+            for c in changes:
+                price = float(c.get("price", 0))
+                size = float(c.get("size", 0))
+                if c.get("side") == "BUY":
+                    bids.append((price, size))
+                else:
+                    asks.append((price, size))
+            if bids or asks:
+                self._catalog.write_orderbook_snapshot(token_id, ts, bids, asks)
+
+        elif ev in ("last_trade_price", "trade"):
+            ts = int(message.get("timestamp", 0) or 0)
+            self._catalog.write_trades(
+                token_id,
+                [
+                    {
+                        "timestamp": ts,
+                        "trade_id": str(message.get("trade_id", "")),
+                        "side": str(message.get("side", "")),
+                        "price": float(message.get("price", 0)),
+                        "size": float(message.get("size", 0)),
+                        "fee": 0.0,
+                    }
+                ],
             )
-
-        elif msg_type == "trade":
-            token_id = message.get("asset_id", "")
-            if token_id:
-                self._catalog.write_trades(token_id, [message])

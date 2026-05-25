@@ -30,7 +30,7 @@ from typing import NamedTuple
 import structlog
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import OrderBookDeltas
-from nautilus_trader.model.enums import OrderSide, TimeInForce
+from nautilus_trader.model.enums import BookAction, OrderSide, TimeInForce
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Price, Quantity
 from nautilus_trader.trading.strategy import Strategy
@@ -70,6 +70,16 @@ class BinaryArbConfig(StrategyConfig, frozen=True):
     strategy_id: str = "BINARY-ARB-001"
     min_profit_usdc: float = 0.02
     max_capital_usdc: float = 1000.0
+    # Per-arb sizing (USDC notional, applied to each leg).
+    # Default 5 matches Polymarket's per-order minimum.
+    order_notional_usdc: float = 5.0
+    # If True, allow the strategy to attempt a new arb on the same condition
+    # immediately after submission (don't wait for fill/cancel events). Useful
+    # in backtests / IOC flow where events may not arrive promptly.
+    allow_concurrent: bool = True
+    # Polymarket switched most binary markets to zero-fee taker; override
+    # the legacy TAKER_FEE constant via config so it remains tunable.
+    taker_fee: float = 0.0
 
 
 class BinaryArbStrategy(Strategy):
@@ -86,6 +96,8 @@ class BinaryArbStrategy(Strategy):
         self._pairs: list[MarketPair] = []
         self._active_arbs: dict[str, ArbOpportunity] = {}   # condition_id → arb
         self._best_asks: dict[str, float] = {}              # instrument_id → price
+        # Set by callers (e.g., BacktestRunner) before on_start; consumed in on_start.
+        self._pending_pairs: list[MarketPair] = []
 
     def register_market_pair(
         self,
@@ -93,8 +105,17 @@ class BinaryArbStrategy(Strategy):
         yes_instrument_id: InstrumentId,
         no_instrument_id: InstrumentId,
     ) -> None:
-        """Register a YES/NO instrument pair to scan for arb opportunities."""
+        """
+        Queue a YES/NO instrument pair to scan for arb opportunities.
+
+        If called before `on_start()` (e.g., by the BacktestRunner during
+        engine setup), the pair is held in `_pending_pairs` and subscribed
+        on_start. If called after on_start, subscription happens immediately.
+        """
         pair = MarketPair(condition_id, yes_instrument_id, no_instrument_id)
+        if not self.is_running:
+            self._pending_pairs.append(pair)
+            return
         self._pairs.append(pair)
         self.subscribe_order_book_deltas(yes_instrument_id)
         self.subscribe_order_book_deltas(no_instrument_id)
@@ -106,6 +127,20 @@ class BinaryArbStrategy(Strategy):
         )
 
     def on_start(self) -> None:
+        # Flush any pre-start pairs queued during engine wiring.
+        for pair in self._pending_pairs:
+            self._pairs.append(pair)
+            self.subscribe_order_book_deltas(pair.yes_instrument_id)
+            self.subscribe_order_book_deltas(pair.no_instrument_id)
+        self._pending_pairs.clear()
+        # If the runner attached a single initial pair tuple, honour it.
+        initial = getattr(self, "_initial_pair", None)
+        if initial is not None and not self._pairs:
+            cid, yes_id, no_id = initial
+            pair = MarketPair(cid, yes_id, no_id)
+            self._pairs.append(pair)
+            self.subscribe_order_book_deltas(yes_id)
+            self.subscribe_order_book_deltas(no_id)
         log.info(
             "BinaryArbStrategy started",
             min_profit=self._cfg.min_profit_usdc,
@@ -114,15 +149,40 @@ class BinaryArbStrategy(Strategy):
 
     def on_stop(self) -> None:
         log.info("BinaryArbStrategy stopping")
-        self.cancel_all_orders()
+        for pair in self._pairs:
+            try:
+                self.cancel_all_orders(pair.yes_instrument_id)
+                self.cancel_all_orders(pair.no_instrument_id)
+            except Exception:
+                pass
 
     def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
-        iid = str(deltas.instrument_id)
-        book = self.cache.order_book(deltas.instrument_id)
-        if book is None or book.best_ask_price() is None:
-            return
+        """
+        Read best ask directly from the incoming delta stream.
 
-        self._best_asks[iid] = float(book.best_ask_price())
+        We don't rely on `cache.order_book(iid)` because that requires the
+        engine to materialise a maintained book, which doesn't happen with
+        only delta subscriptions in backtest. Since our reconstructed book
+        snapshots are 1-level snapshots (CLEAR + 2 ADDs), the cheapest
+        approach is to scan the deltas list ourselves.
+        """
+        iid = str(deltas.instrument_id)
+        best_ask = None
+        best_bid = None
+        for d in deltas.deltas:
+            if d.action == BookAction.ADD:
+                if d.order.side == OrderSide.SELL:
+                    p = float(d.order.price)
+                    if best_ask is None or p < best_ask:
+                        best_ask = p
+                elif d.order.side == OrderSide.BUY:
+                    p = float(d.order.price)
+                    if best_bid is None or p > best_bid:
+                        best_bid = p
+        if best_ask is None:
+            return
+        self._best_asks[iid] = best_ask
+        self._delta_count = getattr(self, "_delta_count", 0) + 1
         self._scan_for_arb(deltas.instrument_id)
 
     def _scan_for_arb(self, updated_id: InstrumentId) -> None:
@@ -131,8 +191,10 @@ class BinaryArbStrategy(Strategy):
             if updated_id not in (pair.yes_instrument_id, pair.no_instrument_id):
                 continue
 
-            # Already have an active arb for this condition
-            if pair.condition_id in self._active_arbs:
+            if (
+                not getattr(self._cfg, "allow_concurrent", False)
+                and pair.condition_id in self._active_arbs
+            ):
                 continue
 
             yes_ask = self._best_asks.get(str(pair.yes_instrument_id))
@@ -141,7 +203,8 @@ class BinaryArbStrategy(Strategy):
                 continue
 
             combined_cost = yes_ask + no_ask
-            profit = 1.0 - combined_cost - TAKER_FEE
+            fee = getattr(self._cfg, "taker_fee", TAKER_FEE)
+            profit = 1.0 - combined_cost - fee
 
             if profit >= self._cfg.min_profit_usdc:
                 log.info(
@@ -162,22 +225,32 @@ class BinaryArbStrategy(Strategy):
         expected_profit: float,
     ) -> None:
         """Submit paired limit orders to capture the arbitrage."""
-        max_shares = self._cfg.max_capital_usdc / (yes_ask + no_ask)
-        size = min(max_shares, self._cfg.max_capital_usdc)
-        size = round(size, 4)
+        # Per-leg notional cap (USDC). Default 5 → typical 5-15 shares per leg.
+        leg_notional = float(getattr(self._cfg, "order_notional_usdc", 5.0))
+        # Each leg's shares: leg_notional / leg_ask. The two legs purchase the
+        # SAME share count (so combined payoff at resolution is `shares * $1`).
+        target_shares_yes = leg_notional / max(yes_ask, 0.01)
+        target_shares_no = leg_notional / max(no_ask, 0.01)
+        size = min(target_shares_yes, target_shares_no)
+        # Cap by max_capital across both legs.
+        share_cap = self._cfg.max_capital_usdc / (yes_ask + no_ask)
+        size = min(size, share_cap)
+        size = round(size, 2)
+        if size < 5.0:  # Polymarket min_order_size
+            size = 5.0
 
         yes_order = self.order_factory.limit(
             instrument_id=pair.yes_instrument_id,
             order_side=OrderSide.BUY,
-            quantity=Quantity.from_str(f"{size:.4f}"),
-            price=Price.from_str(f"{yes_ask:.4f}"),
+            quantity=Quantity.from_str(f"{size:.2f}"),
+            price=Price.from_str(f"{yes_ask:.2f}"),
             time_in_force=TimeInForce.IOC,   # immediate-or-cancel for arb
         )
         no_order = self.order_factory.limit(
             instrument_id=pair.no_instrument_id,
             order_side=OrderSide.BUY,
-            quantity=Quantity.from_str(f"{size:.4f}"),
-            price=Price.from_str(f"{no_ask:.4f}"),
+            quantity=Quantity.from_str(f"{size:.2f}"),
+            price=Price.from_str(f"{no_ask:.2f}"),
             time_in_force=TimeInForce.IOC,
         )
 
@@ -236,14 +309,23 @@ class BinaryArbStrategy(Strategy):
 
     def _abort_arb(self, arb: ArbOpportunity) -> None:
         """Cancel any live orders for this arb to avoid naked exposure."""
-        if arb.yes_order_id and not arb.yes_filled:
-            order = self.cache.order(self.cache.client_order_id(arb.yes_order_id))
-            if order and order.is_open:
-                self.cancel_order(order)
-        if arb.no_order_id and not arb.no_filled:
-            order = self.cache.order(self.cache.client_order_id(arb.no_order_id))
-            if order and order.is_open:
-                self.cancel_order(order)
+        from nautilus_trader.model.identifiers import ClientOrderId
+
+        for cid_str, filled in (
+            (arb.yes_order_id, arb.yes_filled),
+            (arb.no_order_id, arb.no_filled),
+        ):
+            if not cid_str or filled:
+                continue
+            try:
+                order = self.cache.order(ClientOrderId(cid_str))
+            except Exception:
+                order = None
+            if order is not None and order.is_open:
+                try:
+                    self.cancel_order(order)
+                except Exception:
+                    pass
 
     def on_reset(self) -> None:
         self._active_arbs.clear()

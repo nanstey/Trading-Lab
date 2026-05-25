@@ -71,10 +71,20 @@ secrets/
 data/raw/
 data/parquet/*
 !data/parquet/.gitkeep
+data/market_catalog.db
+data/.kill_switch
 *.parquet
 *.feather
+*.sqlite
 logs/*
 !logs/.gitkeep
+
+# Research artifacts — sqlite + auto-generated MD; hypotheses/runbooks are tracked
+research/experiments.db
+research/snapshots/
+research/manual_inbox/
+research/budget.json
+research/logs/
 
 # Docker
 docker-compose.override.yml

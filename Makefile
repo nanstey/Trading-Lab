@@ -214,12 +214,21 @@ derive-keys: ## Derive Polymarket L2 API credentials (one-time setup)
 	$(PYTHON) $(SCRIPTS)/derive_polymarket_keys.py
 
 .PHONY: download-data
-download-data: ## Download Polymarket historical data (set TOKEN_ID env var)
-	@if [ -z "$(TOKEN_ID)" ]; then \
-		echo "Usage: make download-data TOKEN_ID=0x<hex>"; \
+download-data: ## Download Polymarket historical trades for CONDITION_ID
+	@if [ -z "$(CONDITION_ID)" ]; then \
+		echo "Usage: make download-data CONDITION_ID=0x<hex> [START=YYYY-MM-DD] [END=YYYY-MM-DD]"; \
 		exit 1; \
 	fi
-	$(PYTHON) $(SCRIPTS)/download_polymarket_data.py --token-id $(TOKEN_ID)
+	$(PYTHON) $(SCRIPTS)/download_polymarket_data.py --condition-id $(CONDITION_ID) \
+	    $(if $(START),--start $(START),) $(if $(END),--end $(END),)
+
+.PHONY: sync-markets
+sync-markets: ## Refresh active markets metadata (gamma → sqlite catalog)
+	$(PYTHON) $(SCRIPTS)/sync_market_metadata.py --active-only
+
+.PHONY: sync-markets-full
+sync-markets-full: ## Sync ALL markets including closed/archived
+	$(PYTHON) $(SCRIPTS)/sync_market_metadata.py --full
 
 # ---------------------------------------------------------------------------
 # Docker
