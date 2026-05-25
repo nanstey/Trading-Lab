@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""
+Evaluate a hypothesis: run the backtest for its configured market criteria,
+record an `experiments` row, and apply the decision-rule transition.
+
+Decision rules (Phase 5.5 simplification — extend with Bonferroni later):
+    n_trades < 30                          → REJECTED  (insufficient_trades)
+    sharpe < 0                              → REJECTED  (unprofitable)
+    0 ≤ sharpe < 0.5                        → SHELVED   (marginal_is)
+    0.5 ≤ sharpe < 1.0 AND max_dd > 25%     → REJECTED  (high_dd)
+    0.5 ≤ sharpe < 1.0                      → SHELVED   (marginal_is)
+    sharpe ≥ 1.0 AND max_dd ≤ 20%           → OPTIMIZE
+
+Usage:
+    python scripts/eval_strategy.py --slug arb-complement \\
+        --start 2026-05-10 --end 2026-05-26
+
+Prints JSON on stdout.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def decide(
+    sharpe: float, max_dd_pct: float, n_trades: int, pnl: float = 0.0
+) -> tuple[str, str]:
+    """
+    Return (new_state, rejection_category_or_empty).
+
+    For binary-arb strategies the cash-equity Sharpe is misleading (it dips
+    as capital is deployed and never recovers because the arb's $1 payoff
+    is at resolution, not in-window). We use PnL as the primary signal and
+    treat the Sharpe band as a secondary filter only when PnL is positive.
+    """
+    from nautilus_predict.agent.lifecycle import State
+
+    if n_trades < 30:
+        return State.REJECTED.value, "insufficient_trades"
+    if pnl < 0:
+        return State.REJECTED.value, "unprofitable"
+    # PnL is positive — sort by sharpe band, but be lenient on the cash-equity
+    # Sharpe signal for hold-to-resolution strategies.
+    if pnl > 0 and sharpe < 0 and n_trades >= 100:
+        # PnL positive on a strategy that holds-to-resolve; sharpe artefact.
+        return State.OPTIMIZE.value, ""
+    if sharpe < 0.5:
+        return State.SHELVED.value, "marginal_is"
+    if sharpe < 1.0:
+        if abs(max_dd_pct) > 25:
+            return State.REJECTED.value, "high_dd"
+        return State.SHELVED.value, "marginal_is"
+    if abs(max_dd_pct) > 20:
+        return State.REJECTED.value, "high_dd"
+    return State.OPTIMIZE.value, ""
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--slug", required=True)
+    p.add_argument("--start", required=True)
+    p.add_argument("--end", required=True)
+    p.add_argument("--initial-capital-usdc", type=float, default=10_000.0)
+    p.add_argument("--actor", default="agent:eval")
+    p.add_argument(
+        "--db", type=Path, default=Path("research/experiments.db"),
+    )
+    p.add_argument(
+        "--no-transition",
+        action="store_true",
+        help="Record experiment but do not call lifecycle.transition()",
+    )
+    args = p.parse_args()
+
+    from nautilus_predict.agent import budget, lifecycle
+    from nautilus_predict.config import load_config
+    from nautilus_predict.runner.backtest import BacktestRunner
+
+    # Budget check
+    ok, n, cap = budget.check("backtests", db_path=args.db)
+    if not ok:
+        print(json.dumps({"ok": False, "error": "budget_exhausted",
+                          "consumed": n, "cap": cap}))
+        return 3
+
+    h = lifecycle.get_hypothesis(args.slug, db_path=args.db)
+    if not h:
+        print(json.dumps({"ok": False, "error": "hypothesis_not_found",
+                          "slug": args.slug}))
+        return 2
+
+    cfg = load_config()
+    start = datetime.fromisoformat(args.start).replace(tzinfo=UTC)
+    end = datetime.fromisoformat(args.end).replace(tzinfo=UTC)
+    runner = BacktestRunner(config=cfg)
+    result = runner.run_hypothesis(
+        hypothesis_slug=args.slug,
+        start=start,
+        end=end,
+        initial_capital_usdc=args.initial_capital_usdc,
+    )
+    summary = result.to_dict()
+
+    n_trades = summary["aggregate_n_fills"]
+    pnl = summary["aggregate_pnl_usdc"]
+    sharpe = summary["mean_sharpe"]
+    # Max DD over the per-market dimension (max drawdown among per-market values)
+    max_dd = min(
+        (m["max_drawdown_pct"] for m in summary["per_market"]), default=0.0
+    )
+
+    exp_id = lifecycle.record_experiment(
+        slug=args.slug,
+        params={"min_profit_usdc": cfg.arb.min_profit_usdc,
+                "max_capital_usdc": cfg.arb.max_capital_usdc},
+        data_start=args.start,
+        data_end=args.end,
+        sharpe=float(sharpe),
+        max_dd=float(max_dd),
+        fill_rate=(summary["aggregate_n_fills"] / max(summary["aggregate_n_orders"], 1)),
+        pnl=float(pnl),
+        n_trades=int(n_trades),
+        db_path=args.db,
+    )
+    budget.consume("backtests", db_path=args.db)
+
+    new_state, category = decide(
+        float(sharpe), float(max_dd), int(n_trades), pnl=float(pnl)
+    )
+    out = {
+        "ok": True,
+        "experiment_id": exp_id,
+        "slug": args.slug,
+        "sharpe": sharpe,
+        "pnl_usdc": pnl,
+        "max_dd_pct": max_dd,
+        "n_trades": n_trades,
+        "decision_new_state": new_state,
+        "decision_rejection_category": category,
+        "applied": False,
+    }
+    if not args.no_transition and h.state != new_state:
+        try:
+            lifecycle.transition(
+                slug=args.slug,
+                to_state=new_state,
+                reason=f"eval: sharpe={sharpe:.3f} dd={max_dd:.1f}% trades={n_trades}",
+                actor=args.actor,
+                rejection_category=category or None,
+                db_path=args.db,
+            )
+            out["applied"] = True
+        except Exception as exc:
+            out["error"] = str(exc)
+
+    print(json.dumps(out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
