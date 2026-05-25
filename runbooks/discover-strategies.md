@@ -61,7 +61,22 @@ After this runbook runs, either:
 
 ## Output format
 
-Final tool output must be a single line of JSON matching:
+Final tool output must be a single line of JSON with these exact fields:
+
 ```json
-{"ok": true, "discovered": N, "skipped": M, "new_slugs": ["slug1", ...]}
+{"ok": true, "discovered": N, "errored": M, "new_slugs": ["slug1", ...]}
 ```
+
+Field definitions (derived from `discover_strategies.py`'s `details` array):
+- `discovered`: count of `details[]` entries where `error` is NOT set AND
+  `dry_run` is NOT set — i.e., slugs successfully written to disk + DB.
+- `errored`: count of `details[]` entries where `error` IS set.
+- `new_slugs`: list of `details[i].slug` for entries successfully discovered.
+
+If `details[i].dedup_candidates` is non-empty, the slug is STILL counted
+as `discovered` (a row was created in PROPOSED) — but downstream codegen
+should refuse to advance it until a human or follow-up dedup pass reviews
+the overlap. Do not treat dedup_candidates as a skip.
+
+Compute `discovered` and `new_slugs` yourself from the script output;
+the script does not provide them pre-computed.

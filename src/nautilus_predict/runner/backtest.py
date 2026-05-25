@@ -33,6 +33,9 @@ from nautilus_predict.config import TradingConfig
 
 log = logging.getLogger(__name__)
 
+# Process-global guard for NT's Rust logger (panics on re-init).
+_NT_LOGGER_INITIALISED = False
+
 
 @dataclass
 class MarketBacktestResult:
@@ -171,12 +174,16 @@ class BacktestRunner:
             self._strategy_config_class = fm.get("strategy_config_class") or None
 
         results: list[MarketBacktestResult] = []
+        # NT's Rust logger panics on re-init in the same process. Each
+        # per-market backtest runs in a subprocess so it gets a fresh logger.
+        # In-process `_run_single` is fine as long as it's called at most
+        # once per process (e.g. `run_pair` path).
         for m in markets:
             if not m.yes_token_id or not m.no_token_id:
                 log.warning("skipping %s: missing yes/no token ids", m.condition_id)
                 continue
             try:
-                r = self._run_single(
+                r = self._run_single_subprocess(
                     condition_id=m.condition_id,
                     yes_token_id=m.yes_token_id,
                     no_token_id=m.no_token_id,
@@ -190,6 +197,74 @@ class BacktestRunner:
                 log.exception("backtest failed for %s: %s", m.condition_id, exc)
 
         return _aggregate(results)
+
+    def _run_single_subprocess(
+        self,
+        condition_id: str,
+        yes_token_id: str,
+        no_token_id: str,
+        start: datetime,
+        end: datetime,
+        initial_capital_usdc: float,
+        question: str,
+    ) -> MarketBacktestResult:
+        """Run one market backtest in a subprocess for logger isolation."""
+        import json as _json
+        import os
+        import subprocess
+        import sys
+
+        env = os.environ.copy()
+        # Pass strategy refs via env so the subprocess builds the same strategy.
+        if self._strategy_module:
+            env["NP_STRATEGY_MODULE"] = self._strategy_module
+        if self._strategy_class:
+            env["NP_STRATEGY_CLASS"] = self._strategy_class
+        if self._strategy_config_class:
+            env["NP_STRATEGY_CONFIG_CLASS"] = self._strategy_config_class
+        if self._strategy_params:
+            env["NP_STRATEGY_PARAMS_JSON"] = _json.dumps(self._strategy_params)
+
+        cmd = [
+            sys.executable, "scripts/backtest.py",
+            "--condition-id", condition_id,
+            "--yes-token-id", yes_token_id,
+            "--no-token-id", no_token_id,
+            "--start", start.date().isoformat(),
+            "--end", end.date().isoformat(),
+            "--initial-capital-usdc", str(initial_capital_usdc),
+            "--json",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"per-market backtest crashed (rc={proc.returncode}): "
+                f"{proc.stderr[-300:]}"
+            )
+        line = None
+        for raw in reversed(proc.stdout.strip().splitlines()):
+            s = raw.strip()
+            if s.startswith("{"):
+                line = s
+                break
+        if not line:
+            raise RuntimeError("no JSON in subprocess stdout")
+        summary = _json.loads(line)
+        pm = (summary.get("per_market") or [{}])[0]
+        return MarketBacktestResult(
+            condition_id=condition_id,
+            question=question or pm.get("question", ""),
+            yes_token_id=yes_token_id,
+            no_token_id=no_token_id,
+            n_trade_ticks=int(pm.get("n_trade_ticks", 0)),
+            n_orders=int(pm.get("n_orders", 0)),
+            n_fills=int(pm.get("n_fills", 0)),
+            pnl_usdc=float(pm.get("pnl_usdc", 0.0)),
+            sharpe=float(pm.get("sharpe", 0.0)),
+            max_drawdown_pct=float(pm.get("max_drawdown_pct", 0.0)),
+            fill_rate=float(pm.get("fill_rate", 0.0)),
+            kill_switch_triggered=bool(pm.get("kill_switch_triggered", False)),
+        )
 
     # ------------------------------------------------------------------
     # Internals
@@ -260,12 +335,24 @@ class BacktestRunner:
                 kill_switch_triggered=False,
             )
 
-        engine = BacktestEngine(
-            config=BacktestEngineConfig(
-                trader_id=TraderId("BACKTEST-001"),
-                logging=LoggingConfig(log_level="WARN"),
+        # NautilusTrader's Rust logger is a process-global singleton; passing
+        # a `LoggingConfig` on a second engine in the same process panics
+        # ("attempted to set a logger after the logging system was already
+        # initialized"). Only configure logging on the first engine; later
+        # engines reuse the existing logger.
+        global _NT_LOGGER_INITIALISED
+        if not _NT_LOGGER_INITIALISED:
+            engine = BacktestEngine(
+                config=BacktestEngineConfig(
+                    trader_id=TraderId("BACKTEST-001"),
+                    logging=LoggingConfig(log_level="WARN"),
+                )
             )
-        )
+            _NT_LOGGER_INITIALISED = True
+        else:
+            engine = BacktestEngine(
+                config=BacktestEngineConfig(trader_id=TraderId("BACKTEST-001"))
+            )
 
         engine.add_venue(
             venue=Venue("POLYMARKET"),

@@ -60,6 +60,8 @@ def main() -> int:
         datefmt="%H:%M:%S",
     )
 
+    import os
+
     from nautilus_predict.config import load_config
     from nautilus_predict.runner.backtest import BacktestRunner, BacktestRunResult
 
@@ -72,7 +74,26 @@ def main() -> int:
     start = datetime.fromisoformat(args.start).replace(tzinfo=UTC)
     end = datetime.fromisoformat(args.end).replace(tzinfo=UTC)
 
-    runner = BacktestRunner(config=cfg)
+    # When called as a subprocess from BacktestRunner.run_hypothesis, the
+    # strategy refs come in via env vars (NP_STRATEGY_MODULE etc) so the
+    # ad-hoc --condition-id path uses the same strategy as the hypothesis
+    # would. For the --hypothesis-slug path, run_hypothesis reads the
+    # frontmatter itself.
+    strategy_params: dict = {}
+    raw_params = os.environ.get("NP_STRATEGY_PARAMS_JSON")
+    if raw_params:
+        try:
+            strategy_params = json.loads(raw_params)
+        except Exception:
+            strategy_params = {}
+
+    runner = BacktestRunner(
+        config=cfg,
+        strategy_module=os.environ.get("NP_STRATEGY_MODULE") or None,
+        strategy_class=os.environ.get("NP_STRATEGY_CLASS") or None,
+        strategy_config_class=os.environ.get("NP_STRATEGY_CONFIG_CLASS") or None,
+        strategy_params=strategy_params,
+    )
     if args.hypothesis_slug:
         result = runner.run_hypothesis(
             hypothesis_slug=args.hypothesis_slug,

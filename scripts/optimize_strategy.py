@@ -104,11 +104,21 @@ def parse_param_space(md_path: Path) -> dict[str, list[float]]:
             continue
         name, values_raw = bm.group(1), bm.group(2)
         try:
-            values = [float(v.strip()) for v in values_raw.split(",")]
+            # Preserve int-typed values so strategies that take ints
+            # (e.g., `deque(maxlen=N)` requires int) don't crash on a coerced
+            # float. Any value without a `.` is treated as int; everything
+            # else floats.
+            values: list[float | int] = []
+            for v in values_raw.split(","):
+                s = v.strip()
+                if "." in s or "e" in s.lower():
+                    values.append(float(s))
+                else:
+                    values.append(int(s))
         except ValueError:
             log.warning("skipping unparseable values for %s: %s", name, values_raw)
             continue
-        space[name] = values
+        space[name] = values  # type: ignore[assignment]
     return space
 
 
@@ -132,11 +142,16 @@ def run_single_backtest(
     a second engine instance is created in the same process.
     """
     env = os.environ.copy()
-    # Strategy knobs are read from env (load_config()).
+    # Legacy: BinaryArbStrategy reads min/max from TradingConfig.arb via env.
     if "min_profit_usdc" in params:
         env["ARB_MIN_PROFIT_USDC"] = str(params["min_profit_usdc"])
     if "max_capital_usdc" in params:
         env["ARB_MAX_CAPITAL_USDC"] = str(params["max_capital_usdc"])
+    # General path: pass the full param dict as JSON so agent-written
+    # strategies whose configs aren't bound to ARB_* env vars also get the
+    # right values. BacktestRunner reads NP_STRATEGY_PARAMS_JSON and forwards
+    # them as kwargs to the strategy's *Config constructor.
+    env["NP_STRATEGY_PARAMS_JSON"] = json.dumps(params)
 
     cmd = [
         sys.executable, "scripts/backtest.py",
@@ -408,9 +423,18 @@ def main() -> int:
     winner = wf_results[0]
     new_state, category = decide_oos(winner)
 
+    warnings: list[str] = []
+    # Sanity check: if every grid point yielded an identical (pnl, n_trades)
+    # tuple, the parameters didn't actually affect the strategy. Likely the
+    # param names in the MD don't match the strategy *Config fields.
+    unique_results = {(round(g.pnl, 4), g.n_trades) for g in grid}
+    if len(grid) > 1 and len(unique_results) == 1:
+        warnings.append("grid_metrics_identical")
+
     out = {
         "ok": True,
         "slug": args.slug,
+        "warnings": warnings,
         "grid_size": len(grid),
         "wf_candidates": len(wf_results),
         "best_params": winner.params,
@@ -424,6 +448,14 @@ def main() -> int:
         "decision_rejection_category": category,
         "applied": False,
     }
+
+    # Don't apply the transition if grid was effectively non-parametric.
+    if "grid_metrics_identical" in warnings:
+        out["applied"] = False
+        out["decision_new_state"] = "REJECTED"
+        out["decision_rejection_category"] = "param_space_inert"
+        print(json.dumps(out))
+        return 0
 
     if not args.no_transition and h.state != new_state:
         try:

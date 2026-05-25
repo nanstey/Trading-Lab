@@ -291,19 +291,69 @@ class GenericPaperRunner:
     def _dispatch(self, msg: dict, strategy) -> None:
         ev = msg.get("event_type") or msg.get("type")
         token_id = msg.get("asset_id") or msg.get("market") or ""
-        if not token_id or ev not in ("book", "price_change"):
+        if not token_id:
             return
         instrument = self._token_to_instrument.get(token_id)
         if not instrument:
             return
 
-        deltas = self._msg_to_deltas(msg, instrument)
-        if not deltas:
-            return
+        if ev in ("book", "price_change"):
+            deltas = self._msg_to_deltas(msg, instrument)
+            if deltas is not None:
+                try:
+                    strategy.on_order_book_deltas(deltas)
+                except Exception as exc:
+                    log.warning("strategy on_order_book_deltas raised: %s", exc)
+        elif ev in ("last_trade_price", "trade"):
+            tick = self._msg_to_trade_tick(msg, instrument)
+            if tick is not None and hasattr(strategy, "on_trade_tick"):
+                try:
+                    strategy.on_trade_tick(tick)
+                except Exception as exc:
+                    log.warning("strategy on_trade_tick raised: %s", exc)
+
+    def _msg_to_trade_tick(self, msg: dict, instrument):
+        """Convert a `last_trade_price` WS message to a NautilusTrader TradeTick."""
+        from nautilus_trader.model.data import TradeTick
+        from nautilus_trader.model.enums import AggressorSide
+        from nautilus_trader.model.identifiers import TradeId
+
         try:
-            strategy.on_order_book_deltas(deltas)
-        except Exception as exc:
-            log.warning("strategy on_order_book_deltas raised: %s", exc)
+            price = float(msg.get("price", 0))
+        except (TypeError, ValueError):
+            return None
+        if price <= 0:
+            return None
+        price = max(0.01, min(0.99, round(price, 2)))
+        try:
+            size = float(msg.get("size", msg.get("last_trade_size", 1.0)))
+        except (TypeError, ValueError):
+            size = 1.0
+        size = max(size, float(instrument.min_quantity or 0.01))
+        try:
+            ts_ms = int(msg.get("timestamp", 0) or 0)
+        except (TypeError, ValueError):
+            ts_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+        ts_ns = ts_ms * 1_000_000
+
+        side_str = (msg.get("side") or "").upper()
+        aggressor = (
+            AggressorSide.BUYER if side_str == "BUY"
+            else AggressorSide.SELLER if side_str == "SELL"
+            else AggressorSide.NO_AGGRESSOR
+        )
+        # TradeId max 36 chars; PM tx hashes are 66.
+        raw_id = str(msg.get("trade_id") or msg.get("transactionHash") or f"T{ts_ms}")
+        tid = raw_id[2:34] if raw_id.startswith("0x") else raw_id[:32]
+        return TradeTick(
+            instrument_id=instrument.id,
+            price=instrument.make_price(price),
+            size=instrument.make_qty(size),
+            aggressor_side=aggressor,
+            trade_id=TradeId(tid or f"T{ts_ms}"),
+            ts_event=ts_ns,
+            ts_init=ts_ns,
+        )
 
     def _msg_to_deltas(self, msg: dict, instrument):
         """Convert a WS market-channel message to an OrderBookDeltas event."""

@@ -81,6 +81,25 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": "no_markets_selected"}))
         return 2
 
+    # Use the most-recent successful experiment's params (from optimize) so
+    # the paper run reflects what was actually validated, not the strategy
+    # defaults. Falls back to {} when no experiments exist yet.
+    strategy_params: dict = {}
+    exps = lifecycle.list_experiments(args.slug, limit=50)
+    # The walk-forward winner is the last `experiments` row whose params
+    # dict has no `_wf_window` marker (grid points are recorded without it).
+    for e in exps:
+        try:
+            ep = json.loads(e.get("params_json") or "{}")
+        except Exception:
+            continue
+        if "_wf_window" in ep:
+            continue
+        strategy_params = ep
+        break
+    if strategy_params:
+        logging.info("paper using optimised params: %s", strategy_params)
+
     runner = GenericPaperRunner(
         config=cfg,
         slug=args.slug,
@@ -88,6 +107,7 @@ def main() -> int:
         strategy_class=h.strategy_class,
         strategy_config_class=h.strategy_config_class,
         pairs=pairs,
+        strategy_params=strategy_params,
         duration_secs=args.duration_secs,
     )
     summary = asyncio.run(runner.run())

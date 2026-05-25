@@ -64,6 +64,15 @@ class FooBarStrategy(Strategy):
         ...
 ```
 
+The handler name must match NautilusTrader's dispatch table. The
+subscribe → handler mapping for the data types you're likely to use:
+
+| In `on_start`, call:          | NT will then call: |
+|--------------------------------|----------------------|
+| `subscribe_trade_ticks(iid)`    | `on_trade_tick(tick)` |
+| `subscribe_order_book_deltas(iid)` | `on_order_book_deltas(deltas)` |
+| `subscribe_quote_ticks(iid)`    | `on_quote_tick(quote)` |
+
 Hard restrictions enforced by `smoke_test_strategy.py`:
 - Only imports from: `nautilus_trader.*`, `nautilus_predict.*`, `numpy`,
   `pandas`, plus stdlib (`datetime`, `collections`, `json`, `math`,
@@ -102,7 +111,8 @@ def test_instantiates():
 2. Write the strategy + test file (use Write/Edit tools — atomic file
    semantics. Don't shell out to `cat > foo.py`).
 
-3. Smoke:
+3. Smoke (run this BEFORE step 4 — the script only validates code, not
+   frontmatter, so it can run while the hypothesis is still in CODEGEN):
    ```bash
    .venv/bin/python scripts/smoke_test_strategy.py --slug <slug>
    ```

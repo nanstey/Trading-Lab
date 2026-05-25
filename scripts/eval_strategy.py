@@ -93,7 +93,6 @@ def main() -> int:
 
     from nautilus_predict.agent import budget, lifecycle
     from nautilus_predict.config import load_config
-    from nautilus_predict.runner.backtest import BacktestRunner
 
     # Budget check
     ok, n, cap = budget.check("backtests", db_path=args.db)
@@ -109,16 +108,43 @@ def main() -> int:
         return 2
 
     cfg = load_config()
+    # Subprocess `scripts/backtest.py` rather than calling BacktestRunner
+    # in-process. NautilusTrader's logger is a global that panics on second
+    # engine instantiation in the same process, so we keep each backtest
+    # in its own fresh process. (optimize_strategy.py uses the same trick.)
+    import os
+    import subprocess as _sp
+    env = os.environ.copy()
+    cmd = [
+        sys.executable, "scripts/backtest.py",
+        "--hypothesis-slug", args.slug,
+        "--start", args.start,
+        "--end", args.end,
+        "--initial-capital-usdc", str(args.initial_capital_usdc),
+        "--json",
+    ]
+    proc = _sp.run(cmd, capture_output=True, text=True, env=env, timeout=900)
+    if proc.returncode != 0:
+        print(json.dumps({
+            "ok": False, "error": "backtest_subprocess_failed",
+            "rc": proc.returncode,
+            "stderr_tail": proc.stderr[-400:],
+        }))
+        return 4
+    # Last JSON line of stdout is the summary.
+    summary_line = None
+    for line in reversed(proc.stdout.strip().splitlines()):
+        s = line.strip()
+        if s.startswith("{"):
+            summary_line = s
+            break
+    if not summary_line:
+        print(json.dumps({"ok": False, "error": "no_json_in_backtest_stdout"}))
+        return 4
+    summary = json.loads(summary_line)
     start = datetime.fromisoformat(args.start).replace(tzinfo=UTC)
     end = datetime.fromisoformat(args.end).replace(tzinfo=UTC)
-    runner = BacktestRunner(config=cfg)
-    result = runner.run_hypothesis(
-        hypothesis_slug=args.slug,
-        start=start,
-        end=end,
-        initial_capital_usdc=args.initial_capital_usdc,
-    )
-    summary = result.to_dict()
+    _ = (start, end)  # keep linter happy
 
     n_trades = summary["aggregate_n_fills"]
     pnl = summary["aggregate_pnl_usdc"]

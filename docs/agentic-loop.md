@@ -149,3 +149,18 @@ Each runbook is validated by:
 3. If failure mode is "ambiguous instruction", revise the runbook and
    re-spawn.
 4. If failure mode is "missing tool/script", build the script and re-spawn.
+
+### Validation outcomes (2026-05-25)
+
+| Runbook | Result | Revisions made |
+|---|---|---|
+| discover-strategies.md | Pass | Disambiguated output schema; renamed `skipped`→`errored`; defined `new_slugs` derivation |
+| codegen-strategy.md | Pass (twice — wide-spread-fade + tick-mean-revert) | Added subscribe→handler dispatch table; clarified smoke runs before frontmatter update |
+| test-strategy.md | Pass after bug fix | Caught BacktestRunner in-process logger panic (NT Rust logger globals); refactored to subprocess per market. Added explicit rule-precedence note + output-field-rename table |
+| optimize-strategy.md | Pass after bug fix | Caught silent param-passing bug (env-var path only supported ARB_*); added `NP_STRATEGY_PARAMS_JSON` general path. Added grid-identical sanity warning + REJECTED(param_space_inert) |
+
+### Critical bugs caught only by sub-agent execution
+
+- **NT Rust logger panic on 2nd engine init** — `eval_strategy.py` ran in-process before; sub-agent's strict adherence to runbook surfaced the SIGABRT. Fix: every per-market backtest now runs in its own subprocess (`BacktestRunner._run_single_subprocess`).
+- **Param values not reaching agent-written strategies** — optimize_strategy.py only exported `ARB_*` env vars (legacy from BinaryArbStrategy). Agent-written strategies got their defaults on every grid point, producing identical results. Fix: `NP_STRATEGY_PARAMS_JSON` env var passes the full param dict; `BacktestRunner._build_strategy` forwards via `strategy_params` kwarg.
+- **int vs float in deque(maxlen=N)** — optimize_strategy.py converted all param values to float, breaking strategies with `int` config fields. Fix: parser preserves int-typed literals.

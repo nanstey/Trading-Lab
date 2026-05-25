@@ -19,7 +19,10 @@ If `backtests` ≥ 50 (default daily cap), print `{"ok": false, "error":
 You will be invoked with `--slug <slug> --start <YYYY-MM-DD> --end
 <YYYY-MM-DD>`.
 
-Before running, verify the hypothesis's selected markets have data:
+Before running, verify the hypothesis's selected markets have data.
+**Substitute `<slug>` literally in the snippet below before running** —
+e.g., for slug `tick-mean-revert`, replace `'<slug>'` with
+`'tick-mean-revert'`:
 
 ```bash
 .venv/bin/python -c "
@@ -68,16 +71,21 @@ If any selected markets lack on-disk data, fetch them first:
 
 ## Decision rules summary (eval_strategy.py applies these automatically)
 
-| Condition | New state | Category |
-|---|---|---|
-| `n_trades < 30` | REJECTED | insufficient_trades |
-| `pnl < 0` | REJECTED | unprofitable |
-| `pnl > 0 AND sharpe < 0 AND n_trades >= 100` | OPTIMIZE | (hold-to-resolution sharpe artefact) |
-| `sharpe < 0.5` | SHELVED | marginal_is |
-| `sharpe < 1.0 AND max_dd > 25%` | REJECTED | high_dd |
-| `sharpe < 1.0` | SHELVED | marginal_is |
-| `sharpe >= 1.0 AND max_dd > 20%` | REJECTED | high_dd |
-| otherwise | OPTIMIZE | — |
+**Evaluated top to bottom; first match wins.** This is critical — the
+hold-to-resolution OPTIMIZE escape hatch sits ABOVE the SHELVED bands so
+that strategies with strong PnL but artefactual negative Sharpe (common
+for hold-to-resolution arb-style strategies) are promoted, not shelved.
+
+| # | Condition | New state | Category |
+|---|---|---|---|---|
+| 1 | `n_trades < min_trades_floor` (default 30) | REJECTED | insufficient_trades |
+| 2 | `pnl < 0` | REJECTED | unprofitable |
+| 3 | `pnl > 0 AND sharpe < 0 AND n_trades >= max(100, 3*floor)` | OPTIMIZE | — (hold-to-resolution artefact) |
+| 4 | `sharpe < 0.5` | SHELVED | marginal_is |
+| 5 | `sharpe < 1.0 AND max_dd > 25%` | REJECTED | high_dd |
+| 6 | `sharpe < 1.0` | SHELVED | marginal_is |
+| 7 | `sharpe >= 1.0 AND max_dd > 20%` | REJECTED | high_dd |
+| 8 | otherwise | OPTIMIZE | — |
 
 ## Hard rules
 
@@ -96,6 +104,18 @@ If any selected markets lack on-disk data, fetch them first:
 - The state shown by `research_cli.py show` matches `decision_new_state`.
 
 ## Output format
+
+Final tool output: a single line of JSON. Map fields from
+`eval_strategy.py`'s output:
+
+| Your output | From eval_strategy.py |
+|---|---|
+| `ok` | `ok` |
+| `slug` | `slug` |
+| `experiment_id` | `experiment_id` |
+| `new_state` | `decision_new_state` (rename — runbook-internal convention) |
+| `pnl_usdc` | `pnl_usdc` |
+| `n_trades` | `n_trades` |
 
 ```json
 {"ok": true, "slug": "...", "experiment_id": N, "new_state": "OPTIMIZE", "pnl_usdc": ..., "n_trades": ...}

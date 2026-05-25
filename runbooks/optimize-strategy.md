@@ -50,19 +50,31 @@ Invoked with `--slug <slug> --data-start <YYYY-MM-DD> --data-end
    - `best_params`: the winning param set
    - `best_oos_mean_sharpe`, `best_recent_oos_pnl`, etc.
 
-3. If `decision_new_state == "PAPER_READY"`, write a brief summary to
-   the hypothesis MD (append section) with the chosen `best_params` so
-   the human reviewer sees what to deploy:
+3. If `decision_new_state == "PAPER_READY"`, append a summary section to
+   the hypothesis MD with the chosen `best_params` so the human reviewer
+   sees what to deploy. Build the text yourself by reading the JSON
+   fields — don't copy the jq snippet below literally; it's just a sketch:
 
-   ```bash
-   cat >> research/hypotheses/<slug>.md <<EOF
-
-   ## Optimised parameters (PAPER_READY)
-   - best_params: $(jq -c .best_params <(echo '<the json>'))
-   - oos_mean_sharpe: ...
-   - recent_oos_pnl: ...
-   EOF
    ```
+   ## Optimised parameters (PAPER_READY)
+   - best_params: {...the best_params object from the JSON...}
+   - oos_mean_sharpe: <best_oos_mean_sharpe>
+   - oos_mean_pnl: <best_oos_mean_pnl>
+   - recent_oos_pnl: <best_recent_oos_pnl>
+   - recent_oos_sharpe: <best_recent_oos_sharpe>
+   - grid_size: <grid_size>, walk_forward_candidates: <wf_candidates>
+   ```
+
+   Use `Edit` or `Write` to append this to `research/hypotheses/<slug>.md`
+   (after the existing body). No need to update DB rows — `experiments`
+   already has the per-run details.
+
+**Sanity check:** if all grid points produced identical metrics, something
+is wrong (parameters aren't reaching the strategy). Report this in your
+final JSON as `warnings: ["grid_metrics_identical"]` and STOP — do not
+transition to PAPER_READY. The most likely cause is that the strategy's
+*Config doesn't actually expose the parameter names listed in the
+hypothesis MD's `## Parameter space`.
 
 4. Verify:
    ```bash
