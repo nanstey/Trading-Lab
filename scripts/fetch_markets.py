@@ -40,12 +40,12 @@ async def main() -> None:
     args = parse_args()
 
     creds = L2Credentials(
-        api_key=os.environ.get("POLYMARKET_API_KEY", ""),
-        api_secret=os.environ.get("POLYMARKET_API_SECRET", ""),
-        api_passphrase=os.environ.get("POLYMARKET_API_PASSPHRASE", ""),
+        api_key=os.environ.get("POLY_API_KEY", ""),
+        api_secret=os.environ.get("POLY_API_SECRET", ""),
+        api_passphrase=os.environ.get("POLY_API_PASSPHRASE", ""),
     )
 
-    http_url = os.environ.get("POLYMARKET_HTTP_URL", "https://clob.polymarket.com")
+    http_url = os.environ.get("POLY_HTTP_URL", "https://clob.polymarket.com")
     client = PolymarketRestClient(http_url=http_url, creds=creds)
 
     try:
