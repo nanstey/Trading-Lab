@@ -231,6 +231,46 @@ sync-markets-full: ## Sync ALL markets including closed/archived
 	$(PYTHON) $(SCRIPTS)/sync_market_metadata.py --full
 
 # ---------------------------------------------------------------------------
+# Research / agentic loop
+# ---------------------------------------------------------------------------
+
+.PHONY: research-discover
+research-discover: ## Drain manual_inbox + (optional) RSS feeds → PROPOSED
+	$(PYTHON) $(SCRIPTS)/discover_strategies.py $(if $(RSS),--rss,)
+
+.PHONY: research-test
+research-test: ## Evaluate one SLUG (eval_strategy.py)
+	@if [ -z "$(SLUG)" ]; then echo "Usage: make research-test SLUG=<slug> START=YYYY-MM-DD END=YYYY-MM-DD"; exit 1; fi
+	$(PYTHON) $(SCRIPTS)/eval_strategy.py --slug $(SLUG) --start $(START) --end $(END)
+
+.PHONY: research-optimize
+research-optimize: ## Walk-forward optimise one SLUG
+	@if [ -z "$(SLUG)" ]; then echo "Usage: make research-optimize SLUG=<slug> START=YYYY-MM-DD END=YYYY-MM-DD"; exit 1; fi
+	$(PYTHON) $(SCRIPTS)/optimize_strategy.py --slug $(SLUG) --data-start $(START) --data-end $(END)
+
+.PHONY: research-status
+research-status: ## Inspect a hypothesis (state + history + last experiment)
+	@if [ -z "$(SLUG)" ]; then $(PYTHON) $(SCRIPTS)/research_cli.py list; else $(PYTHON) $(SCRIPTS)/research_cli.py show --slug $(SLUG); fi
+
+.PHONY: research-validate
+research-validate: ## Phase 5.11 — drive known-bad + known-good through the loop
+	$(PYTHON) $(SCRIPTS)/validate_loop.py
+
+.PHONY: paper-summary
+paper-summary: ## Realised-PnL report for a PAPER slug (today's log)
+	@if [ -z "$(SLUG)" ]; then echo "Usage: make paper-summary SLUG=<slug> [DATE=YYYYMMDD]"; exit 1; fi
+	$(PYTHON) $(SCRIPTS)/paper_summary.py --slug $(SLUG) $(if $(DATE),--date $(DATE),)
+
+.PHONY: paper-watcher
+paper-watcher: ## Run the auto-retirement watcher across PAPER strategies
+	$(PYTHON) $(SCRIPTS)/paper_watcher.py
+
+.PHONY: paper-run
+paper-run: ## Drive GenericPaperRunner on a PAPER slug (DURATION_SECS optional)
+	@if [ -z "$(SLUG)" ]; then echo "Usage: make paper-run SLUG=<slug> [DURATION_SECS=600]"; exit 1; fi
+	$(PYTHON) $(SCRIPTS)/paper_run.py --slug $(SLUG) $(if $(DURATION_SECS),--duration-secs $(DURATION_SECS),)
+
+# ---------------------------------------------------------------------------
 # Docker
 # ---------------------------------------------------------------------------
 

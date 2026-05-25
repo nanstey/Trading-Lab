@@ -35,6 +35,12 @@ dependencies = [
     # Utilities
     "structlog>=24.4.0",
     "cryptography>=43.0.0",
+
+    # YAML for hypothesis frontmatter + sources.yaml
+    "PyYAML>=6.0",
+
+    # RSS / Atom feed parsing for discovery sources
+    "feedparser>=6.0.0",
 ]
 
 [project.optional-dependencies]

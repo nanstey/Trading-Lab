@@ -1,0 +1,21 @@
+rss:
+- name: hudson-thames
+  url: https://hudsonthames.org/feed/
+  window_days: 30
+  enabled: false
+- name: robot-wealth
+  url: https://www.robotwealth.com/feed/
+  window_days: 30
+  enabled: false
+- name: quantocracy
+  url: https://quantocracy.com/feed/
+  window_days: 14
+  enabled: true
+arxiv:
+  categories:
+  - q-fin.TR
+  - q-fin.PM
+  - q-fin.ST
+  window_days: 7
+  enabled: false
+manual_inbox: research/manual_inbox/

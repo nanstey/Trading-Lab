@@ -41,13 +41,22 @@ def main() -> int:
         "--max-per-run", type=int, default=5,
         help="Cap number of candidates processed per invocation",
     )
+    p.add_argument(
+        "--rss", action="store_true",
+        help="Also scan research/sources.yaml RSS feeds in addition to the inbox",
+    )
+    p.add_argument(
+        "--sources", type=Path, default=Path("research/sources.yaml"),
+    )
     args = p.parse_args()
 
     from nautilus_predict.agent import discovery, lifecycle
 
     candidates = discovery.scan_inbox(args.inbox, db_path=args.db)
+    if args.rss:
+        candidates += discovery.scan_rss(args.sources, db_path=args.db)
     if not candidates:
-        print(json.dumps({"ok": True, "discovered": 0, "msg": "inbox empty"}))
+        print(json.dumps({"ok": True, "discovered": 0, "msg": "no candidates"}))
         return 0
 
     discovered: list[dict] = []

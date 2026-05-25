@@ -214,6 +214,102 @@ def scan_inbox(
     return out
 
 
+def scan_rss(
+    sources_path: Path = DEFAULT_SOURCES,
+    db_path: Path = DEFAULT_DB_PATH,
+    max_items_per_feed: int = 10,
+) -> list[Candidate]:
+    """
+    Poll the `rss:` entries in `sources.yaml` and return new `Candidate`s.
+
+    Each feed's `enabled: true` items are fetched; for each item we build a
+    candidate from the title + summary, sanitise it, dedup against the DB,
+    and slug-ify the title. `window_days` per source filters out old items.
+
+    No-op when `feedparser` isn't installed or the sources file is missing.
+    """
+    if not sources_path.exists():
+        return []
+    try:
+        import yaml
+    except ImportError:
+        log.warning("yaml not installed; skipping rss discovery")
+        return []
+    try:
+        cfg = yaml.safe_load(sources_path.read_text()) or {}
+    except Exception as exc:
+        log.warning("sources.yaml unreadable: %s", exc)
+        return []
+    try:
+        import feedparser
+    except ImportError:
+        log.warning("feedparser not installed; skipping rss discovery")
+        return []
+
+    out: list[Candidate] = []
+    now = datetime.now(tz=UTC)
+    for feed in cfg.get("rss", []) or []:
+        if not feed.get("enabled"):
+            continue
+        url = feed.get("url")
+        if not url:
+            continue
+        try:
+            parsed = feedparser.parse(url)
+        except Exception as exc:
+            log.warning("feed fetch failed %s: %s", url, exc)
+            continue
+        window_days = int(feed.get("window_days", 14))
+        cutoff = now - __import__("datetime").timedelta(days=window_days)
+
+        for entry in (parsed.entries or [])[:max_items_per_feed]:
+            entry_url = entry.get("link") or ""
+            if not entry_url:
+                continue
+            # Date filter — drop too-old entries.
+            published = entry.get("published_parsed") or entry.get("updated_parsed")
+            if published:
+                try:
+                    ts = datetime(*published[:6], tzinfo=UTC)
+                    if ts < cutoff:
+                        continue
+                except Exception:
+                    pass
+
+            if already_seen(entry_url, db_path=db_path):
+                continue
+
+            title = (entry.get("title") or "").strip()
+            summary = (
+                entry.get("summary") or entry.get("description") or ""
+            )
+            sanitized, stripped = _sanitize(summary)
+            if stripped:
+                log.info("rss %s: stripped %d suspicious lines", title[:40], len(stripped))
+
+            slug = _slugify(title) or _slugify(entry_url)[:48]
+            candidate = Candidate(
+                slug=slug,
+                summary=f"# {title}\n\n{sanitized}".strip(),
+                source_url=entry_url,
+                source_type=f"rss:{feed.get('name', 'feed')}",
+                prior_attempts=prior_attempts(sanitized, db_path=db_path),
+                dedup_candidates=find_similar(sanitized, db_path=db_path),
+                market_criteria={},
+            )
+            out.append(candidate)
+    return out
+
+
+def _slugify(s: str) -> str:
+    """Lowercase, alphanumeric + dashes, truncated to 48 chars."""
+    if not s:
+        return ""
+    cleaned = re.sub(r"[^a-z0-9\s-]", "", s.lower())
+    cleaned = re.sub(r"\s+", "-", cleaned).strip("-")
+    return cleaned[:48]
+
+
 def candidate_to_hypothesis_md(
     candidate: Candidate,
     hypotheses_dir: Path = DEFAULT_HYPOTHESES_DIR,
