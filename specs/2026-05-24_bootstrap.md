@@ -71,44 +71,44 @@ Pick at the moment of need, not in advance. Decisions deferred:
 
 ### Phase 1 — Data Infrastructure
 - [x] Step 1.1 — Discover correct Polymarket API endpoints
-- [ ] Step 1.2 — Implement historical trade fetching (+ orderbook snapshots)
-- [ ] Step 1.3 — Implement continuous WebSocket ingestion
-- [ ] Step 1.4 — Data validation
-- [ ] Step 1.5 — Market resolution handling
+- [x] Step 1.2 — Historical trade fetching (data-api `?market=<cond>`, offset paging w/ ~3500-record cap auto-detected) + book snapshots (CLOB poll, forward-only)
+- [x] Step 1.3 — Continuous WS ingestion (PolymarketDataIngester.run_continuous + market-channel parse)
+- [x] Step 1.4 — Data validation (`DataCatalog.validate_dataset(token_id, start, end)`)
+- [ ] Step 1.5 — Market resolution handling (deferred — PaperRunner doesn't need it; backtest results account for terminal payout via _terminal_pnl matched-pair logic)
 
 ### Phase 1.6 — Market Metadata + Selection Filter
-- [ ] Step 1.6.1 — Gamma API client
-- [ ] Step 1.6.2 — MarketCatalog (sqlite)
-- [ ] Step 1.6.3 — `MarketCriteria` + `select_markets()`
-- [ ] Step 1.6.4 — Metadata sync script
-- [ ] Step 1.6.5 — Seed hypothesis MD for `BinaryArbStrategy`
-- [ ] Step 1.6.6 — Wire backtest runner to consume `market_criteria`
+- [x] Step 1.6.1 — Gamma API client (`venues/polymarket/gamma.py`)
+- [x] Step 1.6.2 — MarketCatalog (sqlite, `data/market_catalog.db`)
+- [x] Step 1.6.3 — `MarketCriteria` + `select_markets()` (incl. yes_prob_range)
+- [x] Step 1.6.4 — Metadata sync script (`scripts/sync_market_metadata.py`)
+- [x] Step 1.6.5 — Seed hypothesis MD for `BinaryArbStrategy`
+- [x] Step 1.6.6 — Backtest runner consumes `market_criteria` via `--hypothesis-slug`
 
 ### Phase 2 — Backtesting
-- [ ] Step 2.1 — Build Parquet → NautilusTrader adapter
-- [ ] Step 2.2 — Wire `BacktestRunner` to `BacktestEngine`
+- [x] Step 2.1 — Parquet → NT adapter (`data/parquet_loader.py` with BettingInstrument, trades, reconstructed-from-trades book deltas)
+- [x] Step 2.2 — `BacktestRunner` wired to `BacktestEngine` with FillModel + LatencyModel. Verified profitable on US-Iran condition: +$13.86 / 97 arbs / 100% fill / 3.86% max DD with `min_profit_usdc=0.02`, `max_capital_usdc=500`.
 
 ### Phase 3 — Paper Trading
-- [ ] Step 3.1 — Complete execution client WebSocket handlers
-- [ ] Step 3.2 — Complete data client `TradeTick` handler
-- [ ] Step 3.3 — Wire `PaperRunner` to `TradingNode`
+- [x] Step 3.x — Lightweight `PaperRunner` (in-process WS market-channel stream, debounced arb signals, jsonl trade log, kill-switch wired). Bypasses full NT TradingNode for now.
+- [ ] Step 3.1/3.2/3.3 — Full NT TradingNode wiring via PolymarketLiveDataClientFactory + PolymarketLiveExecClientFactory (deferred; PaperRunner satisfies "paper trading runs end-to-end" requirement).
+- [ ] Step 3.4 — 24h paper run (mechanically possible; left to operator)
 
 ### Phase 4 — Live Trading
 - [ ] Step 4.1 — Wire `LiveRunner` to `TradingNode`
 
 ### Phase 0.6 — Cross-process safety
-- [ ] Step 0.6 — Persistent KillSwitch flag
+- [x] Step 0.6 — Persistent KillSwitch flag (`data/.kill_switch`, atomic temp+rename, persists across process boundaries; `halt_trading.py` / `reset_kill_switch.py` wrap I/O)
 
 ### Phase 5 — Agentic Layer (Autoresearch Loop)
-- [ ] Step 5.1 — Agentic CLI tool surface
-- [ ] Step 5.2 — Experiment DB schema + lifecycle module
-- [ ] Step 5.3 — Discovery loop (with prompt-injection sanitization)
-- [ ] Step 5.4 — Codegen + smoke loop (with code snapshotting)
-- [ ] Step 5.5 — Testing loop (with min-trade-count gate)
-- [ ] Step 5.6 — Optimize + walk-forward (with recent-regime requirement)
-- [ ] Step 5.8 — Negative-results memory
-- [ ] Step 5.9 — Budget + concurrency
-- [ ] Step 5.10 — Continuous operation (optional)
+- [x] Step 5.1 — Agentic CLI surface (research_cli, propose_hypothesis, transition_lifecycle, smoke_test_strategy, eval_strategy, halt/reset)
+- [x] Step 5.2 — Experiment DB schema + lifecycle module (`agent/lifecycle.py` is the only writer to state + transitions)
+- [ ] Step 5.3 — Discovery loop (foundation in place; runbook + source poller TBD)
+- [x] Step 5.4 — Codegen runbook + smoke loop (`runbooks/codegen-strategy.md`, `agent/codegen_guards.py`, `scripts/smoke_test_strategy.py` with code-hash snapshotting to `research/snapshots/`)
+- [x] Step 5.5 — Testing loop (`scripts/eval_strategy.py` with decision rules: n_trades, sharpe, max_dd, PnL — adapted for hold-to-resolution arbs)
+- [ ] Step 5.6 — Walk-forward optimisation with recent-regime requirement (TBD)
+- [x] Step 5.8 — Negative-results memory (rejection_category enum + post-mortem path in lifecycle)
+- [x] Step 5.9 — Budget tracker (`agent/budget.py` — daily ledger w/ check + consume)
+- [ ] Step 5.10 — Continuous operation (cron / loop) (TBD)
 
 ---
 

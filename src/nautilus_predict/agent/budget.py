@@ -60,7 +60,7 @@ def consumed(db_path: Path = DEFAULT_DB_PATH) -> dict[str, int]:
             "FROM budget_ledger WHERE date=?",
             (day,),
         ).fetchone()
-        return {k: int(row[k] or 0) for k in row.keys()}  # type: ignore[index]
+        return {k: int(row[k] or 0) for k in row.keys()}  # noqa: SIM118 — sqlite3.Row
 
 
 def consume(
