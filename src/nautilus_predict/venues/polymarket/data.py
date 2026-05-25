@@ -41,21 +41,109 @@ class PolymarketDataClient(LiveMarketDataClient):
         msgbus,
         cache,
         clock,
+        instrument_provider=None,
     ) -> None:
+        # NT requires an InstrumentProvider on LiveMarketDataClient — even a
+        # stub one is fine for our usage (instruments are pre-loaded into the
+        # cache directly by the runner).
+        if instrument_provider is None:
+            from nautilus_trader.common.providers import InstrumentProvider
+            from nautilus_trader.config import InstrumentProviderConfig
+            instrument_provider = InstrumentProvider(
+                config=InstrumentProviderConfig(),
+            )
+        from nautilus_trader.model.identifiers import Venue
         super().__init__(
             loop=loop,
             client_id=ClientId(VENUE),
-            venue=None,
+            venue=Venue(VENUE),
             msgbus=msgbus,
             cache=cache,
             clock=clock,
+            instrument_provider=instrument_provider,
         )
         self._rest = client
         self._ws = ws_client
+        # The runner pushes a map of {short_symbol: full_token_id} into this
+        # dict before the node starts; lets us recover the full token
+        # needed to subscribe to PM's market WS from a NT InstrumentId.
+        self._symbol_to_token: dict[str, str] = {}
 
     async def _connect(self) -> None:
         log.info("PolymarketDataClient connecting")
         self._ws.start()
+
+    async def _subscribe_order_book_deltas(self, command) -> None:
+        """NT-side hook for `strategy.subscribe_order_book_deltas`."""
+        iid = command.instrument_id
+        token = iid.symbol.value
+        log.info("PolymarketDataClient subscribe book deltas", token=token[:16])
+        # Add a market-channel subscription for this token.
+        self._ws.subscribe_market([token])
+
+    async def _subscribe_trade_ticks(self, command) -> None:
+        """
+        Trade-tick subscription on Polymarket market channel.
+
+        PM's market WS doesn't expose standalone trade-print events; trade
+        prints arrive as the `last_trade_price` field of `book` snapshots
+        and in `price_change` events. We still subscribe to the market
+        channel for this instrument's token so book events flow in (and
+        `_handle_book_event` / `_handle_trade_event` will publish ticks
+        from there). The strategy's `Symbol` is the short-token convention
+        — we need to recover the full token_id to subscribe. Look it up
+        from the instrument in the cache.
+        """
+        iid = command.instrument_id
+        token = self._token_for_instrument(iid)
+        if not token:
+            log.warning(
+                "subscribe_trade_ticks: cannot recover token_id from %s — "
+                "skipping market subscribe",
+                iid,
+            )
+            return
+        log.info(
+            "PolymarketDataClient subscribe trade_ticks → market subscribe",
+            token=token[:16],
+        )
+        self._ws.subscribe_market([token])
+
+    def _token_for_instrument(self, instrument_id) -> str:
+        """
+        Recover the full Polymarket token_id from an InstrumentId.
+
+        Strategies build instruments via `parquet_loader.make_instrument`
+        which puts a 1-line `<short>-<event_id>-0.0` string in the
+        Symbol. The runner pushes the full 77-digit token via
+        `register_tokens(short → full)` before the node starts; we look
+        it up here.
+        """
+        short = instrument_id.symbol.value
+        full = self._symbol_to_token.get(short)
+        if full is None:
+            log.warning(
+                "no full token for instrument %s (map has %d entries)",
+                instrument_id, len(self._symbol_to_token),
+            )
+            return ""
+        return full
+
+    def register_tokens(self, mapping: dict[str, str]) -> None:
+        """Called by the runner before node start with {short_symbol: full_token}."""
+        self._symbol_to_token.update(mapping)
+
+    async def _subscribe_quote_ticks(self, command) -> None:
+        log.debug(
+            "PolymarketDataClient subscribe quote_ticks (no-op for PM market WS)",
+            instrument_id=str(command.instrument_id),
+        )
+
+    async def _unsubscribe_order_book_deltas(self, command) -> None:
+        log.debug("unsubscribe book deltas", instrument_id=str(command.instrument_id))
+
+    async def _unsubscribe_trade_ticks(self, command) -> None:
+        log.debug("unsubscribe trade_ticks", instrument_id=str(command.instrument_id))
 
     async def _disconnect(self) -> None:
         log.info("PolymarketDataClient disconnecting")
@@ -75,41 +163,142 @@ class PolymarketDataClient(LiveMarketDataClient):
         else:
             log.debug("Unhandled WS message type", event_type=event_type)
 
+    def _instrument_for_token(self, token_id: str, condition_id: str = ""):
+        """
+        Look up an InstrumentId matching the convention used by strategies.
+
+        Strategies build InstrumentIds via `parquet_loader.make_instrument`
+        (BettingInstrument format: `<short>-<event_id>-0.0.POLYMARKET`).
+        The data client receives raw token_ids from the WS — we have to
+        synthesise the same InstrumentId so the publish matches what
+        subscribers asked for.
+        """
+        from nautilus_predict.data.parquet_loader import make_instrument
+
+        # No condition_id from WS payload — pass an empty string; the
+        # BettingInstrument event_id derives from token_id alone in that
+        # case (hash-based).
+        instr = make_instrument(token_id, condition_id or "")
+        return instr.id, instr
+
     def _handle_book_event(self, msg: dict[str, Any]) -> None:
-        """Parse orderbook snapshot or delta and publish OrderBookDeltas."""
-        asset_id = msg.get("asset_id", "")
-        instrument_id = InstrumentId.from_str(f"{asset_id}.{VENUE}")
-        ts_event = self._clock.timestamp_ns()
-        ts_init = ts_event
+        """
+        Parse a Polymarket market-channel `book` or `price_change` event
+        and publish `OrderBookDeltas`.
 
-        deltas: list[OrderBookDelta] = []
-        for bid in msg.get("buys", []):
-            deltas.append(
-                OrderBookDelta(
-                    instrument_id=instrument_id,
-                    action=BookAction.UPDATE,
-                    order=_parse_book_level(bid, OrderSide.BUY),
-                    flags=RecordFlag.F_LAST if not deltas else 0,
-                    sequence=0,
-                    ts_event=ts_event,
-                    ts_init=ts_init,
-                )
-            )
-        for ask in msg.get("sells", []):
-            deltas.append(
-                OrderBookDelta(
-                    instrument_id=instrument_id,
-                    action=BookAction.UPDATE,
-                    order=_parse_book_level(ask, OrderSide.SELL),
-                    flags=RecordFlag.F_LAST,
-                    sequence=0,
-                    ts_event=ts_event,
-                    ts_init=ts_init,
-                )
-            )
+        Real WS shape (book event):
+            {
+              "event_type": "book",
+              "asset_id":   "<token>",
+              "market":     "<condition>",
+              "bids":       [{"price": "0.5", "size": "100"}, ...],
+              "asks":       [{"price": "0.6", "size": "80"}, ...],
+              "last_trade_price": "0.55",
+              "timestamp":  "1700000000000",
+            }
+        price_change events have NO top-level asset_id — only inner entries
+        in `price_changes[]` with their own asset_id.
+        """
+        event_type = msg.get("event_type") or msg.get("type")
+        try:
+            ts_event = int(msg.get("timestamp") or 0) * 1_000_000
+        except (TypeError, ValueError):
+            ts_event = self._clock.timestamp_ns()
+        if ts_event <= 0:
+            ts_event = self._clock.timestamp_ns()
+        ts_init = self._clock.timestamp_ns()
 
-        if deltas:
-            self._handle_data(OrderBookDeltas(instrument_id=instrument_id, deltas=deltas))
+        if event_type == "book":
+            asset_id = msg.get("asset_id") or ""
+            condition_id = msg.get("market") or ""
+            if not asset_id:
+                return
+            iid, instr = self._instrument_for_token(asset_id, condition_id)
+            deltas: list[OrderBookDelta] = [
+                OrderBookDelta.clear(iid, 0, ts_event, ts_init),
+            ]
+            for bid in msg.get("bids", []) or []:
+                lvl = _parse_book_level(bid, OrderSide.BUY, instr)
+                if lvl is None:
+                    continue
+                deltas.append(
+                    OrderBookDelta(
+                        instrument_id=iid,
+                        action=BookAction.ADD,
+                        order=lvl,
+                        flags=0,
+                        sequence=0,
+                        ts_event=ts_event,
+                        ts_init=ts_init,
+                    )
+                )
+            for ask in msg.get("asks", []) or []:
+                lvl = _parse_book_level(ask, OrderSide.SELL, instr)
+                if lvl is None:
+                    continue
+                deltas.append(
+                    OrderBookDelta(
+                        instrument_id=iid,
+                        action=BookAction.ADD,
+                        order=lvl,
+                        flags=0,
+                        sequence=0,
+                        ts_event=ts_event,
+                        ts_init=ts_init,
+                    )
+                )
+            if len(deltas) > 1:
+                self._handle_data(
+                    OrderBookDeltas(instrument_id=iid, deltas=deltas)
+                )
+            # Also publish a synthetic TradeTick for last_trade_price so
+            # trade-tick-subscribing strategies get a signal.
+            ltp = msg.get("last_trade_price")
+            if ltp:
+                self._handle_trade_event({
+                    "asset_id": asset_id,
+                    "price": ltp,
+                    "timestamp": msg.get("timestamp"),
+                    "side": "",
+                })
+            return
+
+        if event_type == "price_change":
+            for entry in msg.get("price_changes", []) or []:
+                asset_id = entry.get("asset_id") or ""
+                if not asset_id:
+                    continue
+                iid, instr = self._instrument_for_token(asset_id)
+                lvl = _parse_book_level(
+                    entry,
+                    OrderSide.BUY if entry.get("side") == "BUY" else OrderSide.SELL,
+                    instr,
+                )
+                if lvl is None:
+                    continue
+                deltas = [
+                    OrderBookDelta(
+                        instrument_id=iid,
+                        action=BookAction.UPDATE,
+                        order=lvl,
+                        flags=0,
+                        sequence=0,
+                        ts_event=ts_event,
+                        ts_init=ts_init,
+                    ),
+                ]
+                self._handle_data(
+                    OrderBookDeltas(instrument_id=iid, deltas=deltas)
+                )
+                # Trade-tick path: feed the changed level's price as a
+                # synthetic trade.
+                self._handle_trade_event({
+                    "asset_id": asset_id,
+                    "price": entry.get("price"),
+                    "timestamp": msg.get("timestamp"),
+                    "side": entry.get("side", ""),
+                })
+            return
 
     def _handle_trade_event(self, msg: dict[str, Any]) -> None:
         """
@@ -159,13 +348,11 @@ class PolymarketDataClient(LiveMarketDataClient):
 
         raw_id = str(msg.get("trade_id") or msg.get("hash") or f"T{ts_ms}")
         tid = raw_id[2:34] if raw_id.startswith("0x") else raw_id[:32]
-        instrument_id = InstrumentId.from_str(f"{asset_id}.{VENUE}")
-        # NT requires Price/Quantity precision from an instrument; without
-        # one in cache we fall back to from_str.
+        iid, instr = self._instrument_for_token(asset_id, msg.get("market") or "")
         tick = TradeTick(
-            instrument_id=instrument_id,
-            price=Price.from_str(f"{price:.2f}"),
-            size=Quantity.from_str(f"{size:.2f}"),
+            instrument_id=iid,
+            price=instr.make_price(price),
+            size=instr.make_qty(max(size, 0.01)),
             aggressor_side=aggressor,
             trade_id=TradeId(tid or f"T{ts_ms}"),
             ts_event=ts_ns,
@@ -174,13 +361,32 @@ class PolymarketDataClient(LiveMarketDataClient):
         self._handle_data(tick)
 
 
-def _parse_book_level(level: dict[str, Any], side: OrderSide):
-    """Convert a raw {"price": "0.55", "size": "100"} dict to a BookOrder."""
+def _parse_book_level(level: dict[str, Any], side: OrderSide, instrument=None):
+    """
+    Convert a raw {"price": "0.55", "size": "100"} dict to a BookOrder.
+
+    When `instrument` is provided, prices/sizes are clamped to the
+    instrument's precision grid (PM tick = 0.01, qty precision = 2).
+    """
     from nautilus_trader.model.book import BookOrder
 
+    try:
+        px = float(level.get("price", 0))
+        sz = float(level.get("size", 0))
+    except (TypeError, ValueError):
+        return None
+    if px <= 0 or sz <= 0:
+        return None
+    px = max(0.01, min(0.99, round(px, 2)))
+    if instrument is not None:
+        price = instrument.make_price(px)
+        qty = instrument.make_qty(sz)
+    else:
+        price = Price.from_str(f"{px:.2f}")
+        qty = Quantity.from_str(f"{sz:.2f}")
     return BookOrder(
         side=side,
-        price=Price.from_str(level["price"]),
-        size=Quantity.from_str(level["size"]),
+        price=price,
+        size=qty,
         order_id=0,
     )

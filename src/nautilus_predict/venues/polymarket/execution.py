@@ -56,17 +56,33 @@ class PolymarketExecutionClient(LiveExecutionClient):
         cache,
         clock,
         is_paper: bool = False,
+        instrument_provider=None,
     ) -> None:
+        from nautilus_trader.model.currencies import USDC
+        from nautilus_trader.model.enums import AccountType, OmsType
+        from nautilus_trader.model.identifiers import Venue
+
+        if instrument_provider is None:
+            from nautilus_trader.common.providers import InstrumentProvider
+            from nautilus_trader.config import InstrumentProviderConfig
+            instrument_provider = InstrumentProvider(
+                config=InstrumentProviderConfig(),
+            )
         super().__init__(
             loop=loop,
             client_id=ClientId(VENUE),
-            venue=None,
-            oms_type=None,
-            account_id=AccountId(f"{VENUE}-001"),
+            venue=Venue(VENUE),
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.CASH,
+            base_currency=USDC,
+            instrument_provider=instrument_provider,
             msgbus=msgbus,
             cache=cache,
             clock=clock,
         )
+        # NT's ExecutionClient derives `account_id` from client_id; we
+        # don't need a separate AccountId attribute. The base class
+        # exposes `self.account_id`.
         self._rest = rest
         self._ws = ws
         self._private_key = private_key
@@ -75,6 +91,11 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
         # Map client_order_id → venue_order_id for lifecycle tracking
         self._order_id_map: dict[str, str] = {}
+
+        # Paper-mode: a `PolymarketPaperFillEngine` actor is registered with
+        # the trading node and we delegate fill simulation to it. The runner
+        # sets this attribute after constructing both components.
+        self._paper_fill_engine: Any = None
 
     async def _connect(self) -> None:
         log.info("PolymarketExecutionClient connecting", paper=self._is_paper)
@@ -101,8 +122,19 @@ class PolymarketExecutionClient(LiveExecutionClient):
         self._send_order_submitted(order)
 
         if self._is_paper:
-            # In paper mode, acknowledge immediately without real submission
-            self._send_order_accepted(order, VenueOrderId("PAPER-" + str(order.client_order_id)))
+            # Paper mode — acknowledge immediately and hand the order to the
+            # paper-fill engine. The engine watches live book updates and
+            # emits OrderFilled / OrderCanceled events via the same msgbus
+            # topic the real venue path uses, so the strategy can't tell
+            # paper from live just by event flow.
+            self._send_order_accepted(
+                order, VenueOrderId("PAPER-" + str(order.client_order_id))
+            )
+            if self._paper_fill_engine is not None:
+                try:
+                    self._paper_fill_engine.register_pending(order)
+                except Exception as exc:
+                    log.warning("paper-fill register failed", error=str(exc))
             return
 
         try:
@@ -131,8 +163,13 @@ class PolymarketExecutionClient(LiveExecutionClient):
         client_id = str(command.client_order_id)
         venue_id = self._order_id_map.get(client_id)
 
-        if not venue_id or self._is_paper:
-            # Optimistic cancel in paper mode
+        if self._is_paper:
+            if self._paper_fill_engine is not None:
+                self._paper_fill_engine.cancel_pending(client_id)
+            else:
+                self._send_order_canceled(command)
+            return
+        if not venue_id:
             self._send_order_canceled(command)
             return
 

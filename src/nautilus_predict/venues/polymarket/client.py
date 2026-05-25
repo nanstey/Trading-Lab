@@ -36,14 +36,23 @@ class PolymarketRestClient:
         self._base = http_url.rstrip("/")
         self._creds = creds
         self._owned_session = session is None
-        self._session: aiohttp.ClientSession = session or aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=32),
-            timeout=aiohttp.ClientTimeout(total=10),
-        )
+        # aiohttp.ClientSession needs a running loop to construct, so we
+        # defer creation until the first request lands inside an async
+        # context. Callers that pass an explicit `session` keep ownership.
+        self._session: aiohttp.ClientSession | None = session
+
+    def _ensure_session(self) -> aiohttp.ClientSession:
+        if self._session is None:
+            self._session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(limit=32),
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
+        return self._session
 
     async def close(self) -> None:
-        if self._owned_session:
+        if self._owned_session and self._session is not None:
             await self._session.close()
+            self._session = None
 
     # ------------------------------------------------------------------
     # Public (unauthenticated) endpoints
@@ -137,7 +146,7 @@ class PolymarketRestClient:
         full_path = path + qs
         headers = self._auth_headers("GET", full_path) if auth else {}
 
-        async with self._session.get(self._base + full_path, headers=headers) as resp:
+        async with self._ensure_session().get(self._base + full_path, headers=headers) as resp:
             resp.raise_for_status()
             return await resp.json()
 
@@ -152,7 +161,7 @@ class PolymarketRestClient:
         if auth:
             headers.update(self._auth_headers("POST", path, body_str))
 
-        async with self._session.post(
+        async with self._ensure_session().post(
             self._base + path,
             data=body_str,
             headers=headers,
@@ -173,7 +182,7 @@ class PolymarketRestClient:
         full_path = path + qs
         headers = self._auth_headers("DELETE", full_path) if auth else {}
 
-        async with self._session.delete(self._base + full_path, headers=headers) as resp:
+        async with self._ensure_session().delete(self._base + full_path, headers=headers) as resp:
             resp.raise_for_status()
             return await resp.json()
 
