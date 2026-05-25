@@ -18,6 +18,20 @@ import pytest
 from nautilus_predict.risk.kill_switch import KillSwitch, KillSwitchTriggered
 
 
+@pytest.fixture(autouse=True)
+def _isolate_kill_switch_flag(tmp_path, monkeypatch):
+    """
+    Each test gets a temp-dir kill_switch flag path automatically.
+
+    Without this, `trigger()` writes to `data/.kill_switch` and breaks the
+    real environment + other tests in the same session.
+    """
+    flag_path = tmp_path / ".kill_switch"
+    monkeypatch.setattr(
+        "nautilus_predict.risk.kill_switch.DEFAULT_FLAG_PATH", flag_path
+    )
+
+
 def make_kill_switch(
     limit: float = -200.0,
     cancel_fn: AsyncMock | None = None,

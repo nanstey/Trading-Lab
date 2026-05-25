@@ -23,10 +23,60 @@ the underlying issue.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import tempfile
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
+
+DEFAULT_FLAG_PATH = Path("data/.kill_switch")
+
+
+def read_flag(path: Path = DEFAULT_FLAG_PATH) -> dict[str, Any] | None:
+    """Read the on-disk kill-switch flag, or return None if not present."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception as exc:
+        log.warning("kill_switch flag unreadable at %s: %s", path, exc)
+        return None
+
+
+def write_flag(reason: str, actor: str, path: Path = DEFAULT_FLAG_PATH) -> None:
+    """Atomically write the kill-switch flag file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "triggered": True,
+        "reason": reason,
+        "actor": actor,
+        "ts": datetime.now(tz=UTC).isoformat(),
+    }
+    # atomic: write to temp file in same dir, then rename
+    fd, tmp = tempfile.mkstemp(prefix=".kill_switch.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def clear_flag(path: Path = DEFAULT_FLAG_PATH) -> bool:
+    """Remove the kill-switch flag file. Returns True if a file was removed."""
+    if path.exists():
+        path.unlink()
+        return True
+    return False
 
 
 class KillSwitchTriggered(Exception):
@@ -71,6 +121,8 @@ class KillSwitch:
         self,
         daily_loss_limit_usdc: float,
         cancel_all_fn: Callable[[], Awaitable[None]] | Callable[[], None],
+        flag_path: Path | None = None,
+        check_persistent_on_init: bool = True,
     ) -> None:
         if daily_loss_limit_usdc >= 0:
             raise ValueError(
@@ -80,6 +132,20 @@ class KillSwitch:
         self._cancel_all_fn = cancel_all_fn
         self._triggered = False
         self._trigger_reason: str = ""
+        # Late lookup of DEFAULT_FLAG_PATH lets tests monkeypatch the module
+        # attribute and have it take effect.
+        self._flag_path = flag_path if flag_path is not None else DEFAULT_FLAG_PATH
+
+        # Cross-process safety: if a prior run tripped the flag, refuse to
+        # start. A human must `scripts/reset_kill_switch.py --confirm`.
+        if check_persistent_on_init:
+            existing = read_flag(self._flag_path)
+            if existing and existing.get("triggered"):
+                raise KillSwitchTriggered(
+                    f"Persistent flag at {self._flag_path}: "
+                    f"{existing.get('reason')} (set by {existing.get('actor')} "
+                    f"at {existing.get('ts')})"
+                )
 
     @property
     def is_triggered(self) -> bool:
@@ -137,6 +203,13 @@ class KillSwitch:
 
         self._triggered = True
         self._trigger_reason = reason
+
+        # Persist BEFORE running cancellations so a crash during cancel
+        # still leaves the flag visible to the next process.
+        try:
+            write_flag(reason, actor="kill_switch", path=self._flag_path)
+        except Exception as exc:
+            log.error("failed to persist kill_switch flag: %s", exc)
 
         log.critical(
             "KILL SWITCH TRIGGERED - ALL TRADING HALTED",

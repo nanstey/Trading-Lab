@@ -31,10 +31,16 @@ class MarketCriteria:
     resolved: bool | None = None
     count: int = 3
     sort_by: str = "volume_24h_usdc"
+    # Filter by current YES probability — useful for arb (which wants
+    # near-balanced books). (min_yes_prob, max_yes_prob); None = no filter.
+    yes_prob_range: tuple[float, float] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> MarketCriteria:
         defaults = cls()
+        yes_prob_range = d.get("yes_prob_range")
+        if yes_prob_range is not None:
+            yes_prob_range = (float(yes_prob_range[0]), float(yes_prob_range[1]))
         return cls(
             outcome_type=str(d.get("outcome_type", defaults.outcome_type)),
             min_volume_24h_usdc=float(d.get("min_volume_24h_usdc", 0)),
@@ -49,6 +55,7 @@ class MarketCriteria:
             resolved=d.get("resolved"),
             count=int(d.get("count", defaults.count)),
             sort_by=str(d.get("sort_by", defaults.sort_by)),
+            yes_prob_range=yes_prob_range,
         )
 
 
@@ -110,11 +117,14 @@ def select_markets(criteria: MarketCriteria, catalog: MarketCatalog) -> list[Mar
     sort_col = criteria.sort_by if criteria.sort_by in _SORTABLE_COLS else "volume_24h_usdc"
     where_sql = " AND ".join(where) if where else "1=1"
 
+    # Post-filters (tags, yes_prob_range) can drop many rows; over-fetch by
+    # a generous multiple so the SQL LIMIT doesn't starve the result set.
+    overfetch = max(criteria.count * 20, 50)
     rows = catalog.query(
         where_clause=where_sql,
         params=params,
         order_by=f"{sort_col} DESC",
-        limit=criteria.count * 4,  # over-fetch to allow tag post-filter
+        limit=overfetch,
     )
 
     if criteria.tags_any:
@@ -129,4 +139,33 @@ def select_markets(criteria: MarketCriteria, catalog: MarketCatalog) -> list[Mar
                 filtered.append(r)
         rows = filtered
 
+    # Post-filter on current YES probability (read from raw_json).
+    if criteria.yes_prob_range is not None:
+        lo, hi = criteria.yes_prob_range
+        kept = []
+        for r in rows:
+            yes_prob = _yes_prob_from_raw(catalog, r.condition_id)
+            if yes_prob is not None and lo <= yes_prob <= hi:
+                kept.append(r)
+        rows = kept
+
     return rows[: criteria.count]
+
+
+def _yes_prob_from_raw(catalog: MarketCatalog, condition_id: str) -> float | None:
+    """Fetch current YES price from the persisted raw_json blob."""
+    cur = catalog._conn.execute(  # noqa: SLF001 — single internal helper
+        "SELECT raw_json FROM markets WHERE condition_id=?", (condition_id,)
+    )
+    row = cur.fetchone()
+    if not row or not row["raw_json"]:
+        return None
+    try:
+        raw = json.loads(row["raw_json"])
+        op = raw.get("outcomePrices", "[]")
+        prices = json.loads(op) if isinstance(op, str) else op
+        if isinstance(prices, list) and prices:
+            return float(prices[0])
+    except Exception:
+        return None
+    return None

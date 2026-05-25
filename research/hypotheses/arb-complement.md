@@ -7,14 +7,17 @@ parent_slug: null
 state: BACKTEST
 market_criteria:
   outcome_type: binary
-  min_volume_24h_usdc: 50000
-  min_liquidity_usdc: 10000
+  min_volume_24h_usdc: 20000
+  min_liquidity_usdc: 5000
   categories: null
   require_series: false
   resolution_horizon_days: [1, 365]
   resolved: null
-  count: 3
-  sort_by: liquidity_usdc
+  # Arb only makes sense on roughly-balanced books — extreme markets
+  # (probabilities near 0/1) have ask-sum well above 1 and never cross.
+  yes_prob_range: [0.30, 0.70]
+  count: 5
+  sort_by: volume_24h_usdc
 strategy_module: nautilus_predict.strategies.arb_complement
 strategy_class: BinaryArbStrategy
 strategy_config_class: BinaryArbConfig

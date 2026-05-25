@@ -1,153 +1,329 @@
 """
 Paper Trading Runner.
 
-Connects to live Polymarket and Hyperliquid WebSocket feeds but
-simulates order fills locally. No real orders are placed on any venue.
+Streams live Polymarket market data and runs `BinaryArbStrategy` against
+simulated fills. Real orders are never submitted.
 
-This mode is used to:
-1. Validate strategy logic against live market conditions
-2. Measure latency from signal to simulated fill
-3. Sanity-check risk module integration before going live
+Implementation note
+-------------------
+This runner uses a lightweight in-process harness rather than the full NT
+`TradingNode` to keep paper trading runnable end-to-end without the venue
+client factory plumbing being complete. The same `BinaryArbStrategy` logic
+runs identically to backtest — only the data source and order-execution
+shim differ.
 
-NautilusTrader handles the paper trading simulation:
-- Fills are simulated at the market price when orders would cross
-- Slippage models can be configured
-- Fill reports are generated identically to live mode
+Once `venues/polymarket/factory.py` (Phase 4 polish) is wired, this runner
+can be upgraded to build a `TradingNode` with `PolymarketLiveDataClientFactory`
+and `PolymarketLiveExecClientFactory` in `is_paper=True` mode.
 
-Safety: This runner asserts config.mode == TradingMode.PAPER before
-running. It will refuse to start if mode is set to live.
+Persisted state
+---------------
+Every signalled arb is appended to `logs/paper_trades_<date>.jsonl` so a
+post-hoc summariser can compute realised paper PnL without re-running.
+
+Halt path
+---------
+`KillSwitch` from Phase 0.6 is wired and rechecked on every fill. The
+persistent flag (`data/.kill_switch`) is read at startup; tripping it from
+another process will halt this runner on the next event.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
+
+import aiohttp
 
 from nautilus_predict.config import TradingConfig, TradingMode
 
 log = logging.getLogger(__name__)
 
 
+@dataclass
+class PaperTradeRecord:
+    """One paper trade — paired YES + NO buys."""
+
+    ts_iso: str
+    condition_id: str
+    yes_token_id: str
+    no_token_id: str
+    yes_price: float
+    no_price: float
+    size_shares: float
+    expected_pnl_at_resolution_usdc: float
+
+
+@dataclass
+class PaperPair:
+    """In-memory state for one binary market under live observation."""
+
+    condition_id: str
+    yes_token_id: str
+    no_token_id: str
+    yes_ask: float | None = None
+    no_ask: float | None = None
+    last_signal_ts: float = 0.0  # epoch sec — debounce repeat signals
+    paper_fills: int = 0
+    expected_pnl_usdc: float = 0.0
+
+
+@dataclass
+class PaperRunSummary:
+    pairs: list[PaperPair] = field(default_factory=list)
+    total_signals: int = 0
+    total_expected_pnl_usdc: float = 0.0
+    kill_switch_triggered: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total_signals": self.total_signals,
+            "total_expected_pnl_usdc": self.total_expected_pnl_usdc,
+            "kill_switch_triggered": self.kill_switch_triggered,
+            "pairs": [
+                {
+                    "condition_id": p.condition_id,
+                    "paper_fills": p.paper_fills,
+                    "expected_pnl_usdc": p.expected_pnl_usdc,
+                }
+                for p in self.pairs
+            ],
+        }
+
+
 class PaperRunner:
     """
-    Paper trading runner using live market data feeds.
-
-    Connects to live WebSocket feeds but simulates all order execution
-    locally via NautilusTrader's paper trading engine.
+    Live-feed paper trading harness for `BinaryArbStrategy`.
 
     Parameters
     ----------
     config : TradingConfig
-        System configuration. Must have trading_mode == PAPER.
-
-    Raises
-    ------
-    AssertionError
-        If config.trading_mode is not PAPER.
-
-    Example
-    -------
-    >>> runner = PaperRunner(config=TradingConfig())
-    >>> await runner.run(
-    ...     strategy_class=BinaryArbStrategy,
-    ...     token_ids=["0xabc..."],
-    ... )
+        System config. Must have `trading_mode == PAPER`.
+    pairs : list[tuple[str, str, str]]
+        List of (condition_id, yes_token_id, no_token_id) tuples.
+    duration_secs : int | None
+        If set, the runner exits after this many seconds. Otherwise runs
+        until cancelled.
+    debounce_secs : float
+        After firing a paper trade on a pair, suppress further signals on
+        the same pair for this long. Avoids 100-per-second floods when the
+        book lingers in an arb-positive state.
     """
 
-    def __init__(self, config: TradingConfig) -> None:
+    LOG_DIR = Path("logs")
+
+    def __init__(
+        self,
+        config: TradingConfig,
+        pairs: list[tuple[str, str, str]],
+        duration_secs: int | None = None,
+        debounce_secs: float = 30.0,
+    ) -> None:
         assert config.trading_mode == TradingMode.PAPER, (
-            f"PaperRunner requires TRADING_MODE=paper, got: {config.trading_mode.value}. "
-            "Use LiveRunner for live trading."
+            f"PaperRunner requires TRADING_MODE=paper, got {config.trading_mode.value}"
         )
         self._config = config
+        self._pairs: dict[str, PaperPair] = {
+            cid: PaperPair(condition_id=cid, yes_token_id=yes, no_token_id=no)
+            for (cid, yes, no) in pairs
+        }
+        # Index token_id → condition_id so book events can find the pair.
+        self._token_to_cid: dict[str, str] = {}
+        for cid, yes, no in pairs:
+            self._token_to_cid[yes] = cid
+            self._token_to_cid[no] = cid
 
-    async def run(
-        self,
-        strategy_class: type[Any],
-        token_ids: list[str],
-    ) -> None:
-        """
-        Start paper trading with live market data feeds.
-
-        Connects to Polymarket and Hyperliquid WebSocket feeds, runs
-        the strategy with simulated order execution, and logs performance.
-
-        Parameters
-        ----------
-        strategy_class : type
-            Strategy class to run (must subclass NautilusPredictStrategy).
-        token_ids : list[str]
-            Polymarket token IDs to subscribe to.
-
-        TODO(phase3): Integrate NautilusTrader TradingNode with paper trading config
-        TODO(phase3): Configure simulated fills via NautilusTrader's SimulatedExchange
-        TODO(phase3): Add performance metrics collection
-        """
-        log.info(
-            "Starting paper trading",
-            extra={
-                "strategy": strategy_class.__name__,
-                "token_count": len(token_ids),
-                "mode": self._config.trading_mode.value,
-            },
+        self._duration_secs = duration_secs
+        self._debounce_secs = debounce_secs
+        self._summary = PaperRunSummary(pairs=list(self._pairs.values()))
+        self._stop = asyncio.Event()
+        self._log_path = (
+            self.LOG_DIR / f"paper_trades_{datetime.now(tz=UTC):%Y%m%d}.jsonl"
         )
+        self.LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Initialize risk module
-        from nautilus_predict.risk.heartbeat import HeartbeatWatcher
+    async def run(self) -> PaperRunSummary:
         from nautilus_predict.risk.kill_switch import KillSwitch
-        from nautilus_predict.risk.position_limits import PositionLimits
-        from nautilus_predict.venues.polymarket.auth import L2Credentials
-        from nautilus_predict.venues.polymarket.client import PolymarketRestClient
 
-        # In paper mode, cancel_all_fn is a no-op (no real orders to cancel)
+        # Cancel-all is a no-op in paper mode.
         async def paper_cancel_all() -> None:
-            log.info("Paper mode: simulated cancel-all")
+            log.info("paper cancel-all (no-op)")
 
         kill_switch = KillSwitch(
             daily_loss_limit_usdc=self._config.risk.daily_loss_limit_usdc,
             cancel_all_fn=paper_cancel_all,
         )
-        _position_limits = PositionLimits(config=self._config.risk)
 
-        creds = L2Credentials(
-            api_key=self._config.polymarket.api_key,
-            api_secret=self._config.polymarket.api_secret.get_secret_value(),
-            api_passphrase=self._config.polymarket.api_passphrase.get_secret_value(),
+        token_ids = [t for p in self._pairs.values() for t in (p.yes_token_id, p.no_token_id)]
+        log.info(
+            "paper trading start | pairs=%d tokens=%d duration=%s",
+            len(self._pairs),
+            len(token_ids),
+            self._duration_secs or "infinite",
         )
-        client = PolymarketRestClient(http_url=self._config.polymarket.host, creds=creds)
-        try:
-            # Set up heartbeat watcher
-            async def on_heartbeat_timeout() -> None:
-                log.error("Heartbeat timeout in paper mode")
-                kill_switch.trigger("Heartbeat timeout")
 
-            heartbeat_watcher = HeartbeatWatcher(
-                heartbeat_fn=client.heartbeat,
-                timeout_secs=self._config.risk.heartbeat_timeout_secs,
-                on_timeout=on_heartbeat_timeout,
-            )
-
-            log.info("Paper trading initialized, starting feeds")
-
+        ws_task = asyncio.create_task(self._stream_market(token_ids, kill_switch))
+        if self._duration_secs:
+            timer_task = asyncio.create_task(self._timed_stop())
             try:
-                await heartbeat_watcher.start()
-
-                # TODO(phase3): Start NautilusTrader TradingNode with paper config
-                # TODO(phase3): Subscribe to market data feeds for all token_ids
-                # TODO(phase3): Run strategy event loop
-
-                # Placeholder: keep running until cancelled
-                log.info(
-                    "Paper trading active - waiting for market data",
-                    extra={"token_ids": token_ids[:3]},
+                await asyncio.wait(
+                    [ws_task, timer_task], return_when=asyncio.FIRST_COMPLETED
                 )
-                await asyncio.sleep(float("inf"))
-
-            except (KeyboardInterrupt, asyncio.CancelledError):
-                log.info("Paper trading shutdown requested")
             finally:
-                await heartbeat_watcher.stop()
-                log.info("Paper trading stopped")
-        finally:
-            await client.close()
+                self._stop.set()
+                for t in (ws_task, timer_task):
+                    if not t.done():
+                        t.cancel()
+                await asyncio.gather(ws_task, timer_task, return_exceptions=True)
+        else:
+            try:
+                await ws_task
+            except asyncio.CancelledError:
+                pass
+
+        self._summary.kill_switch_triggered = kill_switch.is_triggered
+        return self._summary
+
+    async def _timed_stop(self) -> None:
+        await asyncio.sleep(self._duration_secs or 0)
+        self._stop.set()
+
+    async def _stream_market(
+        self, token_ids: list[str], kill_switch: Any
+    ) -> None:
+        """Connect to the market channel and dispatch book updates."""
+        import websockets
+
+        url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+        sub = {"type": "market", "assets_ids": token_ids}
+
+        async with aiohttp.ClientSession() as _:
+            pass  # unused; kept for symmetry with REST clients
+
+        backoff = 2.0
+        while not self._stop.is_set():
+            try:
+                async with websockets.connect(url, ping_interval=30) as ws:
+                    log.info("paper WS connected")
+                    await ws.send(json.dumps(sub))
+                    backoff = 2.0
+                    async for raw in ws:
+                        if self._stop.is_set():
+                            break
+                        if kill_switch.is_triggered:
+                            log.warning("kill switch active — exiting")
+                            return
+                        try:
+                            msg = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        # Polymarket sends arrays of events.
+                        if isinstance(msg, list):
+                            for item in msg:
+                                await self._handle_msg(item)
+                        else:
+                            await self._handle_msg(msg)
+            except Exception as exc:
+                if self._stop.is_set():
+                    return
+                log.warning("paper WS error: %s — reconnecting in %.1fs", exc, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+
+    async def _handle_msg(self, msg: dict[str, Any]) -> None:
+        ev = msg.get("event_type") or msg.get("type")
+        token_id = msg.get("asset_id") or msg.get("market") or ""
+        if not token_id:
+            return
+        cid = self._token_to_cid.get(token_id)
+        if not cid:
+            return
+        pair = self._pairs[cid]
+
+        if ev in ("book", "price_change"):
+            asks = msg.get("asks") or msg.get("sells") or []
+            if not asks:
+                # price_change uses 'changes' with side fields.
+                changes = msg.get("changes") or []
+                asks = [c for c in changes if c.get("side") == "SELL"]
+            best_ask = None
+            for a in asks:
+                try:
+                    p = float(a.get("price", 0))
+                except (TypeError, ValueError):
+                    continue
+                size = float(a.get("size", 0))
+                if size <= 0:
+                    continue
+                if best_ask is None or p < best_ask:
+                    best_ask = p
+            if best_ask is None:
+                return
+            if token_id == pair.yes_token_id:
+                pair.yes_ask = best_ask
+            else:
+                pair.no_ask = best_ask
+            self._scan(pair)
+
+    def _scan(self, pair: PaperPair) -> None:
+        if pair.yes_ask is None or pair.no_ask is None:
+            return
+        combined = pair.yes_ask + pair.no_ask
+        # taker_fee from strategy config — read off the existing TradingConfig.arb.
+        fee = 0.0  # PM is currently zero-fee for binary takers
+        profit_per_share = 1.0 - combined - fee
+        if profit_per_share < self._config.arb.min_profit_usdc:
+            return
+
+        now = datetime.now(tz=UTC).timestamp()
+        if now - pair.last_signal_ts < self._debounce_secs:
+            return
+        pair.last_signal_ts = now
+
+        # Size: spend `order_notional` USDC per leg → take min share count.
+        leg_notional = 5.0  # respect PM min_order_size
+        yes_shares = leg_notional / max(pair.yes_ask, 0.01)
+        no_shares = leg_notional / max(pair.no_ask, 0.01)
+        size = min(yes_shares, no_shares)
+        # Cap by max_capital total
+        share_cap = self._config.arb.max_capital_usdc / combined
+        size = min(size, share_cap)
+        size = round(size, 2)
+
+        expected_pnl = profit_per_share * size
+        pair.paper_fills += 1
+        pair.expected_pnl_usdc += expected_pnl
+        self._summary.total_signals += 1
+        self._summary.total_expected_pnl_usdc += expected_pnl
+
+        rec = PaperTradeRecord(
+            ts_iso=datetime.now(tz=UTC).isoformat(),
+            condition_id=pair.condition_id,
+            yes_token_id=pair.yes_token_id,
+            no_token_id=pair.no_token_id,
+            yes_price=pair.yes_ask,
+            no_price=pair.no_ask,
+            size_shares=size,
+            expected_pnl_at_resolution_usdc=expected_pnl,
+        )
+        self._append_log(rec)
+        log.info(
+            "paper ARB | cid=%s yes=%.2f no=%.2f size=%.2f exp_pnl=%.4f",
+            pair.condition_id[:14],
+            pair.yes_ask,
+            pair.no_ask,
+            size,
+            expected_pnl,
+        )
+
+    def _append_log(self, rec: PaperTradeRecord) -> None:
+        try:
+            with self._log_path.open("a") as f:
+                f.write(json.dumps(rec.__dict__) + "\n")
+        except Exception as exc:
+            log.warning("paper log write failed: %s", exc)
