@@ -149,7 +149,7 @@ success criteria that must be met before progressing to the next.
 - [ ] `LiveRunner.run()` fully implemented
 - [ ] Polymarket ExecutionClient integrated with NautilusTrader
 - [ ] polyfill-rs Rust hot path compiled and integrated
-- [ ] Docker deployment on VPS (4 CPU, 8GB RAM)
+- [ ] Hosting decision made (see specs/2026-05-24_bootstrap.md § Deployment Posture — currently deferred)
 - [ ] Real-time monitoring dashboard (logs + PnL)
 - [ ] Alert on: kill switch trigger, heartbeat failure, large fills
 - [ ] `LIVE_TRADING_CONFIRMED` double opt-in verified

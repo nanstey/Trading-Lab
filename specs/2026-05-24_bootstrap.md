@@ -20,6 +20,41 @@ This plan follows the roadmap's phase-gate discipline: each phase must be verifi
 
 ---
 
+## Deployment Posture
+
+**Current stance: local-first.** All workloads run on the developer machine (laptop / workstation). Hosting is deferred until a specific bottleneck makes it unavoidable.
+
+### What runs locally
+- Backtests (`make backtest`) — laptop CPU is fine for grid sizes up to a few hundred runs
+- Paper trading (`make paper`) — works as long as the laptop stays awake and connected
+- Credential derivation (`scripts/derive_polymarket_keys.py`) — one-shot, local-only
+- The agentic layer (Phase 5) when it lands — runbooks invoked locally by Claude Code
+
+### When to revisit (bottleneck triggers)
+Reach for a hosted deployment when ANY of the following become true:
+1. **Continuous 24h+ paper or live runs** required, and laptop sleep/network drops are interrupting them
+2. **Live trading** with non-trivial capital where downtime costs more than ~$30/mo of hosting
+3. **Concurrent workloads** — backtest grid jobs + live trader competing for laptop CPU/RAM
+4. **Agentic layer needs to be always-on** (e.g., live-anomaly-watcher runbook running on a schedule)
+
+### When that day comes
+The existing `Dockerfile` and `docker-compose.yml` are deployment-ready. Reasonable options in rough order of cost:
+- **Hetzner CX22** in Frankfurt — ~$5/mo, full control, EU geo dodges any US Polymarket access friction
+- **Fly.io** `shared-cpu-2x` + 10GB volume — ~$15-20/mo, easiest deploy from existing Dockerfile
+- **Railway** — ~$10-25/mo, GitHub auto-deploy, persistent volumes
+- **AWS EC2 t3.medium** — ~$30/mo, closest to Polymarket infra (us-east)
+
+Pick at the moment of need, not in advance. Decisions deferred:
+- Provider
+- Region (depends on Polymarket access from chosen region)
+- Whether to colocate backtest jobs with the live trader or split
+
+### What this changes downstream
+- **Phase 3.4** (24h paper run): execute on laptop, plan around your sleep schedule. If interruptions block the gate, that's the bottleneck signal to deploy.
+- **Phase 4.3** (pre-live checklist): runs locally. Hosting is a separate decision made later, not a pre-live gate.
+
+---
+
 ## Progress
 
 ### Phase 0 — Fix the Foundation
@@ -604,6 +639,8 @@ make paper
 
 ### Step 3.4 — 24-Hour Paper Run
 
+_Runs locally — see § Deployment Posture for when to revisit._
+
 **[YOU]** Run paper trading for a continuous 24-hour window. Monitor:
 ```bash
 make paper 2>&1 | tee logs/paper_$(date +%Y%m%d).log
@@ -659,6 +696,8 @@ python -c "import polyfill_rs; print('Rust module loaded')"
 ---
 
 ### Step 4.3 — Pre-Live Checklist
+
+_Runs locally. Hosting is decoupled from the go-live decision — see § Deployment Posture._
 
 **[YOU]** Complete every item before running `make live`:
 - [ ] `scripts/check_env.py` runs cleanly with live credentials
