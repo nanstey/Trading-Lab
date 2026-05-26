@@ -1,5 +1,5 @@
 """
-Risk management module for Nautilus-Predict.
+Risk management module for Trading Lab.
 
 Three layers of protection:
 1. KillSwitch: Triggers on daily loss breach, halts all trading

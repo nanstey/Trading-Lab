@@ -1,5 +1,5 @@
 """
-Execution runners for Nautilus-Predict.
+Execution runners for Trading Lab.
 
 Three runner modes:
 - BacktestRunner: Replay historical Parquet data through NautilusTrader

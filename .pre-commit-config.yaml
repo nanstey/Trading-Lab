@@ -1,4 +1,4 @@
-# Pre-commit hooks for Nautilus-Predict
+# Pre-commit hooks for Trading Lab
 # Install: make pre-commit-install
 # Run manually: make pre-commit-run
 #

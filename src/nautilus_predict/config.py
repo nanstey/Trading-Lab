@@ -1,5 +1,5 @@
 """
-System-wide configuration for Nautilus-Predict.
+System-wide configuration for Trading Lab.
 
 Three sources, merged at load time:
 

@@ -1,5 +1,5 @@
 """
-Parquet Data Catalog for Nautilus-Predict.
+Parquet Data Catalog for Trading Lab.
 
 Stores historical order book snapshots and trades in Parquet format
 organized by token_id. Used for backtesting and strategy research.

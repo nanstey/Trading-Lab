@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "nautilus-predict"
+name = "Trading Lab"
 version = "0.1.0"
 description = "Algorithmic trading system for Polymarket and Hyperliquid using NautilusTrader"
 readme = "README.md"

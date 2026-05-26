@@ -40,7 +40,7 @@ def build_node(is_paper: bool = True) -> TradingNode:
     cfg = load_config()
 
     node_config = TradingNodeConfig(
-        trader_id=TraderId("NAUTILUS-PREDICT-001"),
+        trader_id=TraderId("Trading Lab-001"),
         logging=LoggingConfig(log_level=cfg.log_level, log_colors=True),
         exec_engine=LiveExecEngineConfig(
             reconciliation=not is_paper,

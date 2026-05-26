@@ -12,7 +12,7 @@
 
 ## Overview
 
-Nautilus-Predict is an algorithmic trading system built on [NautilusTrader](https://nautilustrader.io),
+Trading Lab is an algorithmic trading system built on [NautilusTrader](https://nautilustrader.io),
 targeting the Polymarket prediction market CLOB and Hyperliquid perpetual futures exchange.
 
 The system is designed around three core principles:
@@ -26,7 +26,7 @@ The system is designed around three core principles:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         Nautilus-Predict                                 │
+│                         Trading Lab                                 │
 │                                                                          │
 │  ┌───────────────────┐    ┌──────────────────────────────────────────┐  │
 │  │   External Feeds  │    │         NautilusTrader Engine            │  │

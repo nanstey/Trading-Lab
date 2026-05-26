@@ -1,5 +1,5 @@
 # =============================================================================
-# Nautilus-Predict — Task Runner
+# Trading Lab — Task Runner
 # =============================================================================
 # Prerequisites: Python 3.12+, Rust/cargo (for polyfill-rs)
 # Docker: NautilusTrader container for paper/live execution
@@ -32,7 +32,7 @@ SCRIPTS := scripts
 .PHONY: help
 help:
 	@echo ""
-	@echo "Nautilus-Predict — Available Commands"
+	@echo "Trading Lab — Available Commands"
 	@echo "======================================"
 	@echo "Fresh-machine setup: see README.md 'Fresh-machine setup' section"
 	@echo ""

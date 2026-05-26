@@ -10,7 +10,7 @@
 
 ## Overview
 
-Nautilus-Predict follows a disciplined phase-gate approach:
+Trading Lab follows a disciplined phase-gate approach:
 research → build → backtest → paper → live. Each phase has clear
 success criteria that must be met before progressing to the next.
 

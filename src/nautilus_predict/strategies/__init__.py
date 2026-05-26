@@ -1,5 +1,5 @@
 """
-Strategy implementations for Nautilus-Predict.
+Strategy implementations for Trading Lab.
 
 Available strategies:
 - BinaryArbStrategy: Exploit YES+NO < 1.00 complement arbitrage (canonical)

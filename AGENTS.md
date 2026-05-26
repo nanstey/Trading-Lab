@@ -1,4 +1,4 @@
-# AGENTS.md — Nautilus-Predict Codebase Guide
+# AGENTS.md — Trading Lab Codebase Guide
 
 Authoritative documentation for any AI agent working in this repo. Read it
 before making changes. Update the Phase Gate State table when a phase

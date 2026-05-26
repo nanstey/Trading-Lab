@@ -1,5 +1,5 @@
 """
-Abstract base strategy for Nautilus-Predict.
+Abstract base strategy for Trading Lab.
 
 All strategies in this system extend NautilusPredictStrategy, which adds:
 - Kill switch integration (halt trading on risk breach)
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 class NautilusPredictStrategy(Strategy):
     """
-    Abstract base class for all Nautilus-Predict strategies.
+    Abstract base class for all Trading Lab strategies.
 
     Extends NautilusTrader's Strategy with:
     - Risk / kill-switch integration

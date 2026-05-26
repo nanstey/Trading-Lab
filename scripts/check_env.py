@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Environment and connectivity checker for Nautilus-Predict.
+Environment and connectivity checker for Trading Lab.
 
 Validates that all required environment variables are set and checks
 connectivity to the Polymarket and Hyperliquid APIs. Safe to run
@@ -197,7 +197,7 @@ def print_report(report: CheckReport, verbose: bool = False) -> None:
     RESET = "\033[0m"
     BOLD = "\033[1m"
 
-    print(f"\n{BOLD}Nautilus-Predict Environment Check{RESET}")
+    print(f"\n{BOLD}Trading Lab Environment Check{RESET}")
     print("=" * 60)
 
     for result in report.results:
@@ -329,7 +329,7 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Check Nautilus-Predict environment configuration",
+        description="Check Trading Lab environment configuration",
     )
     parser.add_argument(
         "--verbose", "-v",

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       target: runtime
-    image: nautilus-predict:latest
+    image: Trading Lab:latest
     restart: unless-stopped
     env_file:
       - .env

@@ -1,4 +1,4 @@
-# Nautilus-Predict
+# Trading Lab
 
 Algorithmic trading lab for [Polymarket](https://polymarket.com) (prediction
 markets) and [Hyperliquid](https://hyperliquid.xyz) (perp DEX), built on

@@ -1,5 +1,5 @@
 """
-Data infrastructure for Nautilus-Predict.
+Data infrastructure for Trading Lab.
 
 Provides:
 - DataCatalog: PyArrow/Parquet storage for historical market data

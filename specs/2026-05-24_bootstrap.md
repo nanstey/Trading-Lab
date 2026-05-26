@@ -1,4 +1,4 @@
-# Implementation Plan: Nautilus-Predict — Phase 0 Completion through Agentic Layer
+# Implementation Plan: Trading Lab — Phase 0 Completion through Agentic Layer
 
 ## Context
 
@@ -923,7 +923,7 @@ Construct: `TradeTick(instrument_id, Price(price, precision), Quantity(size, pre
 ```python
 # Build TradingNode in paper mode
 node_config = TradingNodeConfig(
-    trader_id="NAUTILUS-PREDICT-PAPER-001",
+    trader_id="Trading Lab-PAPER-001",
     log_level=self._config.log_level,
     data_clients={"POLYMARKET": PolymarketDataClientConfig(...)},
     exec_clients={"POLYMARKET": PolymarketExecClientConfig(..., is_paper=True)},
