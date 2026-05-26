@@ -9,13 +9,13 @@ strategy makes money the others' caps grow proportionally; when the wallet
 shrinks everyone's caps shrink together.
 
 For Polymarket the equity is:
-    free USDC (CLOB balance/allowance endpoint)
+    free pUSD / USDC collateral (CLOB balance/allowance endpoint)
   + value of open positions (data-api /value endpoint)
   + notional of resting orders (sum of qty*price across open orders)
 
-We fall back gracefully: if `/value` fails we use balance + open-order
-notional; if even that fails we return the cached last-good value and
-log a warning. A stuck provider is better than a halted trading system —
+Some Polymarket accounts trade through a separate profile/proxy wallet rather
+than the signer EOA. The provider therefore tries both the configured wallet
+and, when available, the `proxyWallet` discovered from Gamma public-profile.
 the operator can refresh via `scripts/portfolio_status.py --refresh`.
 """
 
@@ -150,10 +150,32 @@ class PolymarketEquityProvider:
         """
         if not self._wallet:
             raise RuntimeError("no wallet address configured")
-        url = f"{self._data_api}/value"
-        params = {"user": self._wallet}
+
+        addresses = [self._wallet]
+        proxy_wallet = await self._discover_proxy_wallet(self._wallet)
+        if proxy_wallet and proxy_wallet.lower() != self._wallet.lower():
+            addresses.append(proxy_wallet)
+
+        for candidate in addresses:
+            value = await self._fetch_data_api_value(candidate)
+            if value > 0:
+                return EquitySnapshot(
+                    venue="POLYMARKET",
+                    total_usdc=value,
+                    free_usdc=0.0,
+                    open_position_value_usdc=value,
+                    open_order_notional_usdc=0.0,
+                    source="data_api" if candidate.lower() == self._wallet.lower() else "data_api_proxy",
+                    ts=time.time(),
+                )
+
+        raise RuntimeError(f"data-api returned non-positive value for addresses={addresses!r}")
+
+    async def _fetch_data_api_value(self, address: str) -> float:
         import aiohttp
 
+        url = f"{self._data_api}/value"
+        params = {"user": address}
         sess = self._session or aiohttp.ClientSession()
         try:
             async with sess.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -163,24 +185,33 @@ class PolymarketEquityProvider:
             if self._session is None:
                 await sess.close()
 
-        # data-api returns either a list of {user, value} or a single dict.
         value = 0.0
         if isinstance(body, list) and body:
             value = float(body[0].get("value", 0) or 0)
         elif isinstance(body, dict):
             value = float(body.get("value", 0) or 0)
-        if value <= 0:
-            raise RuntimeError(f"data-api returned non-positive value: {body!r}")
+        return value
 
-        return EquitySnapshot(
-            venue="POLYMARKET",
-            total_usdc=value,
-            free_usdc=0.0,
-            open_position_value_usdc=value,
-            open_order_notional_usdc=0.0,
-            source="data_api",
-            ts=time.time(),
-        )
+    async def _discover_proxy_wallet(self, address: str) -> str | None:
+        import aiohttp
+
+        url = "https://gamma-api.polymarket.com/public-profile"
+        params = {"address": address}
+        sess = self._session or aiohttp.ClientSession()
+        try:
+            async with sess.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    return None
+                body = await resp.json()
+        finally:
+            if self._session is None:
+                await sess.close()
+
+        if isinstance(body, dict):
+            proxy = body.get("proxyWallet")
+            if isinstance(proxy, str) and proxy.startswith("0x") and len(proxy) == 42:
+                return proxy
+        return None
 
     async def _refresh_via_clob(self) -> EquitySnapshot:
         """
@@ -243,14 +274,19 @@ class StaticEquityProvider:
     where you want pct-of-equity semantics without hitting the venue.
     """
 
-    def __init__(self, total_usdc: float, venue: str = "POLYMARKET") -> None:
+    def __init__(
+        self,
+        total_usdc: float,
+        venue: str = "POLYMARKET",
+        source: str = "static",
+    ) -> None:
         self._snapshot = EquitySnapshot(
             venue=venue,
             total_usdc=float(total_usdc),
             free_usdc=float(total_usdc),
             open_position_value_usdc=0.0,
             open_order_notional_usdc=0.0,
-            source="static",
+            source=source,
             ts=time.time(),
         )
 

@@ -73,6 +73,7 @@ data/parquet/*
 !data/parquet/.gitkeep
 data/market_catalog.db
 data/.kill_switch
+data/cron_auditor_state.json
 *.parquet
 *.feather
 *.sqlite

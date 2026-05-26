@@ -95,3 +95,21 @@ class TestSignL2Request:
             sig_empty = sign_l2_request(creds, "POST", "/order", "").as_dict()["POLY-SIGNATURE"]
             sig_body = sign_l2_request(creds, "POST", "/order", '{"test":1}').as_dict()["POLY-SIGNATURE"]
         assert sig_empty != sig_body
+
+    def test_uses_explicit_address_when_present(self) -> None:
+        creds = L2Credentials(
+            api_key="test-api-key",
+            api_secret=self._make_creds().api_secret,
+            api_passphrase="test-passphrase",
+            address=TEST_ADDRESS,
+        )
+        headers = sign_l2_request(creds, "GET", "/orders").as_dict()
+        assert headers["POLY-ADDRESS"] == TEST_ADDRESS
+
+    def test_signature_is_urlsafe_base64(self) -> None:
+        creds = self._make_creds()
+        with patch("trading_lab.venues.polymarket.auth.time") as mock_time:
+            mock_time.time.return_value = 1700000000.0
+            sig = sign_l2_request(creds, "GET", "/orders").as_dict()["POLY-SIGNATURE"]
+        assert "+" not in sig
+        assert "/" not in sig

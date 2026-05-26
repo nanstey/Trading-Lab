@@ -130,6 +130,8 @@ def main() -> int:
         "instruments": summary.instruments,
         "duration_secs": summary.duration_secs,
         "kill_switch_triggered": summary.kill_switch_triggered,
+        "log_path": summary.log_path,
+        "signals_emitted": summary.signals_emitted,
     }))
     return 0
 

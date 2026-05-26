@@ -21,19 +21,20 @@ TRADING_LAB=/home/$USER/Code/Trading-Lab
 
 # Every 6h: take one SMOKE_PASS or BACKTEST slug and run eval. The script
 # is single-shot; an outer loop / agent can drive selecting which slug.
-0 */6 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state SMOKE_PASS | jq -r '.[0].slug // empty') ; \
+0 */6 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state SMOKE_PASS | jq -r '.[-1].slug // empty') ; \
              [ -n "$SLUG" ] && make research-test SLUG="$SLUG" START=2026-05-24 END=$(date -u +\%Y-\%m-\%d) >> logs/cron_test.log 2>&1
 
 # Daily 03:00: walk-forward optimise the oldest OPTIMIZE slug.
 0 3 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state OPTIMIZE | jq -r '.[-1].slug // empty') ; \
            [ -n "$SLUG" ] && make research-optimize SLUG="$SLUG" START=2026-05-24 END=$(date -u +\%Y-\%m-\%d) >> logs/cron_optimize.log 2>&1
 
-# Every 10 min: auto-retirement watcher (single-day + 7-day drawdown rules).
-*/10 * * * *  cd $TRADING_LAB && make paper-watcher     >> logs/cron_watcher.log  2>&1
-
-# Every PAPER slug: roll up today's paper-trades jsonl into a summary report.
+# Hourly at :30: roll up today's paper-trades jsonl into a summary report.
 # Schedule per-slug; here's the pattern (one line per slug).
 30 * * * *  cd $TRADING_LAB && make paper-summary SLUG=tick-mean-revert >> logs/cron_summary.log 2>&1
+
+# Hourly at :35: auto-retirement watcher (single-day + 7-day drawdown rules).
+# Runs after paper-summary so it sees the latest realised-PnL rows.
+35 * * * *  cd $TRADING_LAB && make paper-watcher     >> logs/cron_watcher.log  2>&1
 ```
 
 ## Option B — `loop` skill (interactive sessions)

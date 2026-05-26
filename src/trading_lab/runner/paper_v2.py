@@ -38,10 +38,13 @@ on the main thread. So:
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from trading_lab.config import TradingConfig
@@ -50,11 +53,24 @@ log = logging.getLogger(__name__)
 
 
 @dataclass
+class PaperSignal:
+    ts_iso: str
+    slug: str
+    token_id: str
+    side: str
+    price: float
+    quantity: float
+    client_order_id: str
+
+
+@dataclass
 class PaperRunV2Summary:
     slug: str
     instruments: int
     duration_secs: float
     kill_switch_triggered: bool
+    log_path: str = ""
+    signals_emitted: int = 0
 
 
 class PaperRunnerV2:
@@ -75,6 +91,8 @@ class PaperRunnerV2:
     duration_secs : int | None
         Auto-stop after N seconds via a timer thread. None = until SIGINT.
     """
+
+    LOG_DIR = Path("logs")
 
     def __init__(
         self,
@@ -99,6 +117,12 @@ class PaperRunnerV2:
         self._pairs = pairs
         self._params = strategy_params or {}
         self._duration_secs = duration_secs
+        self.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        self._log_path = (
+            self.LOG_DIR / f"paper_{slug}_{datetime.now(tz=UTC):%Y%m%d}.jsonl"
+        )
+        self._signals_emitted = 0
+        self._token_to_instrument: dict[str, Any] = {}
 
     def run(self) -> PaperRunV2Summary:
         from nautilus_trader.config import (
@@ -128,6 +152,7 @@ class PaperRunnerV2:
         for cid, yes_id, no_id in self._pairs:
             instruments[yes_id] = make_instrument(yes_id, cid)
             instruments[no_id] = make_instrument(no_id, cid)
+        self._token_to_instrument = instruments
 
         async def _noop_cancel_all() -> None:
             pass
@@ -255,6 +280,7 @@ class PaperRunnerV2:
 
         strategy = self._find_strategy(node, self._strategy_class)
         if strategy is not None:
+            self._install_submit_logging(strategy)
             for cid, yes_id, no_id in self._pairs:
                 yes_iid = instruments[yes_id].id
                 no_iid = instruments[no_id].id
@@ -311,6 +337,8 @@ class PaperRunnerV2:
             instruments=len(instruments),
             duration_secs=round(duration, 2),
             kill_switch_triggered=kill_switch.is_triggered,
+            log_path=str(self._log_path),
+            signals_emitted=self._signals_emitted,
         )
 
     # ------------------------------------------------------------------
@@ -346,6 +374,62 @@ class PaperRunnerV2:
             pass
         return None
 
+    def _install_submit_logging(self, strategy) -> None:
+        """Write GenericPaper-compatible signal records while preserving the
+        real TradingNode submit path used by PaperRunnerV2."""
+        runner = self
+        original_submit = getattr(strategy, "submit_order", None)
+        if original_submit is None:
+            log.warning("strategy has no submit_order; paper signal logging disabled")
+            return
+
+        def capture_submit(order, *args, **kwargs):
+            iid = str(getattr(order, "instrument_id", ""))
+            token_id = _instrument_to_token(iid, runner._token_to_instrument)
+            try:
+                price = float(getattr(order, "price", 0) or 0)
+            except Exception:
+                price = 0.0
+            try:
+                quantity = float(getattr(order, "quantity", 0) or 0)
+            except Exception:
+                quantity = 0.0
+
+            sig = PaperSignal(
+                ts_iso=datetime.now(tz=UTC).isoformat(),
+                slug=runner._slug,
+                token_id=token_id,
+                side=str(getattr(order, "side", "")),
+                price=price,
+                quantity=quantity,
+                client_order_id=str(getattr(order, "client_order_id", "")),
+            )
+            runner._signals_emitted += 1
+            runner._append_log(sig)
+            log.info(
+                "paper_v2 signal | slug=%s side=%s px=%.2f qty=%.2f token=%s..",
+                runner._slug,
+                sig.side,
+                sig.price,
+                sig.quantity,
+                token_id[:14],
+            )
+            return original_submit(order, *args, **kwargs)
+
+        try:
+            object.__setattr__(strategy, "submit_order", capture_submit)
+        except (AttributeError, TypeError):
+            log.warning(
+                "could not patch submit_order on strategy; paper signal logging disabled"
+            )
+
+    def _append_log(self, sig: PaperSignal) -> None:
+        try:
+            with self._log_path.open("a") as f:
+                f.write(json.dumps(sig.__dict__) + "\n")
+        except Exception as exc:
+            log.warning("paper_v2 log write failed: %s", exc)
+
     def _find_exec_client(self, node, venue_str: str):
         try:
             from nautilus_trader.model.identifiers import ClientId
@@ -377,7 +461,10 @@ class PaperRunnerV2:
         """
         import asyncio
 
-        from trading_lab.agent.venue_equity import PolymarketEquityProvider
+        from trading_lab.agent.venue_equity import (
+            PolymarketEquityProvider,
+            StaticEquityProvider,
+        )
         from trading_lab.venues.polymarket.auth import L2Credentials, derive_address
         from trading_lab.venues.polymarket.client import PolymarketRestClient
 
@@ -390,6 +477,7 @@ class PaperRunnerV2:
         except Exception as exc:
             log.warning("equity: could not derive wallet address: %s", exc)
             return None
+        account_address = self._config.polymarket.funder or wallet
 
         rest = None
         if self._config.polymarket.has_l2_credentials:
@@ -398,6 +486,7 @@ class PaperRunnerV2:
                     api_key=self._config.polymarket.api_key,
                     api_secret=self._config.polymarket.api_secret.get_secret_value(),
                     api_passphrase=self._config.polymarket.api_passphrase.get_secret_value(),
+                    address=wallet,
                 )
                 rest = PolymarketRestClient(
                     http_url=self._config.polymarket.host, creds=creds,
@@ -405,15 +494,41 @@ class PaperRunnerV2:
             except Exception as exc:
                 log.debug("equity: could not build PM rest client: %s", exc)
 
-        provider = PolymarketEquityProvider(wallet_address=wallet, rest_client=rest)
+        provider = PolymarketEquityProvider(wallet_address=account_address, rest_client=rest)
         try:
             asyncio.run(provider.refresh())
-            log.info(
-                "equity: primed for %s — total=$%.2f (source=%s)",
-                wallet[:10] + "...",
-                provider.current_usdc(),
-                provider.snapshot.source if provider.snapshot else "n/a",
-            )
+            if provider.current_usdc() > 0:
+                log.info(
+                    "equity: primed for %s — total=$%.2f (source=%s)",
+                    wallet[:10] + "...",
+                    provider.current_usdc(),
+                    provider.snapshot.source if provider.snapshot else "n/a",
+                )
+                return provider
         except Exception as exc:
             log.warning("equity: initial refresh failed (will retry on demand): %s", exc)
+
+        fallback_usdc = float(self._config.portfolio.risk.max_total_exposure_usdc or 0.0)
+        if fallback_usdc > 0:
+            log.warning(
+                "equity: venue equity unavailable for paper; using static fallback $%.2f",
+                fallback_usdc,
+            )
+            if rest is not None:
+                try:
+                    asyncio.run(rest.close())
+                except Exception:
+                    pass
+            return StaticEquityProvider(
+                total_usdc=fallback_usdc,
+                source="paper-fallback",
+            )
+
         return provider
+
+
+def _instrument_to_token(iid_str: str, lookup: dict[str, Any]) -> str:
+    for tok, instr in lookup.items():
+        if str(instr.id) == iid_str:
+            return tok
+    return iid_str
