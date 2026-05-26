@@ -1,5 +1,13 @@
 # Implementation Roadmap
 
+> **⚠ Status (2026-05-25):** Phases 0–5 of this roadmap are now ✅. The
+> live `[ ]` boxes below are the older granular spec items that have
+> been superseded or completed under different names. The **single
+> authoritative status snapshot** is the table in [README.md](../README.md)
+> and the Progress block in [specs/2026-05-24_bootstrap.md](../specs/2026-05-24_bootstrap.md).
+> This file is kept for the rationale/criteria descriptions per phase,
+> not as a checklist.
+
 ## Overview
 
 Nautilus-Predict follows a disciplined phase-gate approach:

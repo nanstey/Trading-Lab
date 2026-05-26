@@ -89,26 +89,37 @@ Pick at the moment of need, not in advance. Decisions deferred:
 - [x] Step 2.2 — `BacktestRunner` wired to `BacktestEngine` with FillModel + LatencyModel. Verified profitable on US-Iran condition: +$13.86 / 97 arbs / 100% fill / 3.86% max DD with `min_profit_usdc=0.02`, `max_capital_usdc=500`.
 
 ### Phase 3 — Paper Trading
-- [x] Step 3.x — Lightweight `PaperRunner` (in-process WS market-channel stream, debounced arb signals, jsonl trade log, kill-switch wired). Bypasses full NT TradingNode for now.
-- [ ] Step 3.1/3.2/3.3 — Full NT TradingNode wiring via PolymarketLiveDataClientFactory + PolymarketLiveExecClientFactory (deferred; PaperRunner satisfies "paper trading runs end-to-end" requirement).
+- [x] Step 3.1 — `venues/polymarket/data.py` complete: real WS shape (bids/asks, price_change with inner price_changes[]), publishes TradeTicks via _handle_data, instrument-id matches strategy's make_instrument convention
+- [x] Step 3.2 — `venues/polymarket/execution.py` complete: full OrderSubmitted/Accepted/Filled/Canceled/Rejected dispatch, paper-mode delegates to PolymarketPaperFillEngine
+- [x] Step 3.3 — `PaperRunnerV2` (`runner/paper_v2.py`, `scripts/paper_run_v2.py`) wires real TradingNode with is_paper=True + fill engine as Actor on the msgbus
+- [x] Legacy `PaperRunner` / `GenericPaperRunner` kept for reference; current default is V2
 - [ ] Step 3.4 — 24h paper run (mechanically possible; left to operator)
 
 ### Phase 4 — Live Trading
-- [ ] Step 4.1 — Wire `LiveRunner` to `TradingNode`
+- [x] Step 4.1 — `LiveRunner` (`runner/live_v2.py`, `scripts/live_run.py`) — same TradingNode as PaperRunnerV2 with is_paper=False. Pre-flight gates: TRADING_MODE=live + LIVE_TRADING_CONFIRMED + L1+L2 creds + kill switch clear + state=LIVE. Default mode pre-flight-only; needs `--i-understand-this-is-live` to actually trade.
+- [ ] Step 4.2 — First real live deployment (no actual capital deployed yet — code path is ready)
 
 ### Phase 0.6 — Cross-process safety
 - [x] Step 0.6 — Persistent KillSwitch flag (`data/.kill_switch`, atomic temp+rename, persists across process boundaries; `halt_trading.py` / `reset_kill_switch.py` wrap I/O)
 
 ### Phase 5 — Agentic Layer (Autoresearch Loop)
-- [x] Step 5.1 — Agentic CLI surface (research_cli, propose_hypothesis, transition_lifecycle, smoke_test_strategy, eval_strategy, halt/reset)
+- [x] Step 5.1 — Agentic CLI surface (research_cli, propose_hypothesis, transition_lifecycle, smoke_test_strategy, eval_strategy, optimize_strategy, discover_strategies, halt/reset, paper_summary, paper_watcher, paper_run_v2, live_run, run_ingestion, rolling_eval, operator_briefing, validate_loop)
 - [x] Step 5.2 — Experiment DB schema + lifecycle module (`agent/lifecycle.py` is the only writer to state + transitions)
-- [ ] Step 5.3 — Discovery loop (foundation in place; runbook + source poller TBD)
+- [x] Step 5.3 — Discovery: manual_inbox drain + RSS poller (`agent/discovery.py`, `research/sources.yaml`); arxiv/SSRN still TODO
 - [x] Step 5.4 — Codegen runbook + smoke loop (`runbooks/codegen-strategy.md`, `agent/codegen_guards.py`, `scripts/smoke_test_strategy.py` with code-hash snapshotting to `research/snapshots/`)
-- [x] Step 5.5 — Testing loop (`scripts/eval_strategy.py` with decision rules: n_trades, sharpe, max_dd, PnL — adapted for hold-to-resolution arbs)
-- [ ] Step 5.6 — Walk-forward optimisation with recent-regime requirement (TBD)
+- [x] Step 5.5 — Testing loop (`scripts/eval_strategy.py` with decision rules: n_trades, sharpe, max_dd, PnL — per-pair Sharpe via BacktestRunner._per_pair_pnl_series)
+- [x] Step 5.6 — Walk-forward optimisation with recent-regime requirement (`scripts/optimize_strategy.py` — parallel grid via ThreadPoolExecutor + 3-window WF with last-30d gate; auto-warn on identical grid)
+- [x] Step 5.7 — Auto-retirement watcher (`scripts/paper_watcher.py` — single-day 5% → HALTED, 7d 15% → RETIRED, kill-switch propagation)
 - [x] Step 5.8 — Negative-results memory (rejection_category enum + post-mortem path in lifecycle)
 - [x] Step 5.9 — Budget tracker (`agent/budget.py` — daily ledger w/ check + consume)
-- [ ] Step 5.10 — Continuous operation (cron / loop) (TBD)
+- [x] Step 5.10 — Continuous operation — scheduling architecture in `docs/scheduling.md` + `docs/deployment.md`; Makefile targets for every cron entry; not actually scheduled (user-deployment concern)
+- [x] Step 5.11 — End-to-end validation (`scripts/validate_loop.py` — known-bad rejected by smoke, known-good drives to OPTIMIZE/PAPER cleanly)
+
+### Phase 5 follow-ons (not in the original spec)
+- [x] Events log architecture (`agent/events.py` + `logs/events.jsonl`)
+- [x] Operator briefing (`scripts/operator_briefing.py` + forwarding policy)
+- [x] PaperRunnerV2 + LiveRunner (real TradingNode for both paper and live)
+- [x] PolymarketPaperFillEngine (NT Actor — live fill simulation on real book)
 
 ---
 

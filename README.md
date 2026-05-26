@@ -2,120 +2,167 @@
 
 Algorithmic trading lab for [Polymarket](https://polymarket.com) (prediction
 markets) and [Hyperliquid](https://hyperliquid.xyz) (perp DEX), built on
-[NautilusTrader](https://nautilustrader.io). Strategy: complement arbitrage
-on binary prediction markets — buy YES + NO when the combined ask falls below
-$1.00 (minus fees), hold to resolution.
+[NautilusTrader](https://nautilustrader.io). Three runtimes — **backtest /
+paper / live** — that share the same strategy code paths.
 
 ## What runs today
 
-- **Data:** historical trade ingestion + sqlite market metadata + parquet catalog
-- **Backtest:** NautilusTrader `BacktestEngine` with realistic FillModel + LatencyModel; hypothesis-driven market selection; per-market + aggregate metrics
-- **Paper:** live Polymarket WS stream, in-process simulated fills, jsonl trade log, kill-switch wired
-- **Agentic layer:** sqlite experiment DB + lifecycle state machine + AST codegen guards + JSON-I/O CLI surface for an external agent runtime
-- **Risk:** persistent kill-switch (`data/.kill_switch`), heartbeat watcher, position limits
+| Layer | Status |
+|---|---|
+| **Data ingestion** — historical fetch (data-api) + live WS daemon + sqlite metadata + Parquet catalog | ✅ |
+| **Backtest** — NT `BacktestEngine` with realistic FillModel + LatencyModel; per-pair Sharpe; parallel grid + walk-forward optimisation | ✅ |
+| **Paper trading** — real NT `TradingNode` with `is_paper=True` + `PolymarketPaperFillEngine` Actor; same code path as live | ✅ |
+| **Live trading** — same TradingNode, `is_paper=False`; pre-flight refuses without env + creds + clear kill switch + state=LIVE | ✅ (untested with real capital) |
+| **Agentic loop** — sqlite experiment DB, lifecycle state machine, codegen guards, JSON-I/O CLI surface, 4 runbooks | ✅ |
+| **Operator harness** — `logs/events.jsonl` + briefing script with built-in forwarding policy; ready for an external SMS/Slack/email agent | ✅ |
+| **Risk layer** — persistent kill switch, heartbeat watcher, position limits, paper auto-retirement (5%/15% rules) | ✅ |
 
-`make backtest HYPOTHESIS=arb-complement` validates the strategy on
-hypothesis-selected markets. Verified profitable on balanced markets (e.g.
-US-Iran nuclear deal: +$13.86 over 97 paired arbs, ~$0.14/arb edge).
+For a deep-dive on the architecture, see [docs/architecture.md](docs/architecture.md),
+[docs/agentic-loop.md](docs/agentic-loop.md), and
+[docs/deployment.md](docs/deployment.md).
 
-## Quick start
+## Strategies in this repo
+
+| Strategy | File | Status |
+|---|---|---|
+| `BinaryArbStrategy` | `strategies/arb_complement.py` | PAPER, optimised |
+| `TickMeanRevertStrategy` | `strategies/tick_mean_revert.py` | PAPER, optimised |
+| `WideSpreadFadeStrategy` | `strategies/wide_spread_fade.py` | PAPER (override) |
+| `PolymarketMarketMaker` | `strategies/market_maker.py` | Scaffolded, not wired |
+| `CrossVenueHedgeStrategy` | `strategies/cross_venue_hedge.py` | Scaffolded |
+| `CatalystTrader` | `strategies/catalyst_trader.py` | Scaffolded |
+
+## Fresh-machine setup
+
+See [docs/getting-started.md](docs/getting-started.md) for the full
+walkthrough. The short version:
 
 ```bash
-# 1. One-time bootstrap
-make dev                # uv venv + install deps
+# 1. Clone + install
+git clone <repo-url> trading-lab && cd trading-lab
+curl -LsSf https://astral.sh/uv/install.sh | sh   # installs uv
+make dev                                          # creates .venv + installs deps
 
-# 2. Configure credentials (paper mode works with empty creds for read-only)
+# 2. Credentials (paper trades work with empty L2 creds; need them for live)
 cp .env.example .env
-# fill POLY_PRIVATE_KEY + derived L2 creds (see `make derive-keys`)
+$EDITOR .env                                      # paste POLY_PRIVATE_KEY
+.venv/bin/python scripts/derive_polymarket_keys.py  # one-time L2 derivation
+make check-env                                    # 23/23 should pass
 
-# 3. Sync market metadata + download recent data
+# 3. Sync market metadata (~10s)
 make sync-markets
+
+# 4. Backfill historical trades for the markets you want to backtest
 .venv/bin/python scripts/download_polymarket_data.py \
     --condition-id 0xa70fc3695a65833b91b45df6db6015096f3e1471b70352ca411b4209010e7633 \
     --start 2026-05-10 --end 2026-05-26
 
-# 4. Backtest (hypothesis-driven)
-.venv/bin/python scripts/backtest.py --hypothesis-slug arb-complement \
-    --start 2026-05-10 --end 2026-05-26
-
-# 5. Paper trade (live WS, simulated fills)
-.venv/bin/python -m nautilus_predict.main --mode paper --duration-secs 300
-
-# 6. Inspect the agentic layer
+# 5. Init the agentic-loop DB + register the seed hypothesis
 .venv/bin/python scripts/research_cli.py init
 .venv/bin/python scripts/propose_hypothesis.py \
     --file research/hypotheses/arb-complement.md --initial-state BACKTEST
-.venv/bin/python scripts/eval_strategy.py --slug arb-complement \
-    --start 2026-05-10 --end 2026-05-26
-.venv/bin/python scripts/research_cli.py show --slug arb-complement
+
+# 6. Eval + optimise → PAPER_READY
+make research-test     SLUG=arb-complement START=2026-05-24 END=2026-05-26
+make research-optimize SLUG=arb-complement START=2026-05-24 END=2026-05-26
+
+# 7. Approve the human gate (PAPER_READY → PAPER)
+.venv/bin/python scripts/transition_lifecycle.py \
+    --slug arb-complement --to PAPER \
+    --reason "human approves paper deployment" --actor user:$USER
+
+# 8. Paper-trade for 5 minutes
+make paper-run SLUG=arb-complement DURATION_SECS=300
+```
+
+## Daily operations
+
+```bash
+# Continuous data capture (long-lived; usually under systemd/tmux)
+make data-ingest
+
+# Periodic re-eval on the rolling window (cron-friendly)
+make rolling-eval
+
+# Per-slug paper PnL report (writes research/paper_reports/<slug>_<date>.md)
+make paper-summary SLUG=tick-mean-revert
+
+# Auto-retirement watcher — halt/retire PAPER strategies on threshold breaches
+make paper-watcher
+
+# Operator briefing — JSON for your SMS/Slack agent; --md for human-readable
+make operator-brief MD=1
+
+# Inspect lifecycle state
+make research-status                       # all hypotheses
+make research-status SLUG=tick-mean-revert # one slug + history + experiments
 ```
 
 ## Trading venues
 
 ### Polymarket — primary
-- Central Limit Order Book on Polygon
-- Binary outcome prediction markets (YES/NO tokens)
+- Central Limit Order Book on Polygon, binary outcome tokens
 - EIP-712 L1 auth → derived L2 API credentials (HMAC-SHA256)
-- WebSocket feeds for real-time book + trade prints
-- `gamma-api.polymarket.com` for market metadata, `data-api.polymarket.com` for trade history, `clob.polymarket.com` for book/orders
+- `gamma-api.polymarket.com` (metadata), `data-api.polymarket.com` (history), `clob.polymarket.com` (book/orders), `wss://ws-subscriptions-clob.polymarket.com/ws/{market,user}` (live)
+- See [docs/polymarket_auth.md](docs/polymarket_auth.md) for auth details
 
 ### Hyperliquid — secondary
-- Perp futures DEX; auth + client scaffolding present but no strategy uses it yet
-
-## Strategies
-
-| Strategy | Description | Status |
-|----------|-------------|--------|
-| `BinaryArbStrategy` | YES + NO < $1.00 - fees → buy both legs | Backtested + paper-runnable |
-| `PolymarketMarketMaker` | Quote both sides, earn rebates | Scaffolded, not wired |
-| `CrossVenueHedgeStrategy` | Hyperliquid/Polymarket arb | Scaffolded |
-| `CatalystTrader` | Crypto catalyst momentum | Scaffolded |
-
-## Implementation phases
-
-See `specs/2026-05-24_bootstrap.md` for the full plan. Status snapshot:
-
-| Phase | State |
-|---|---|
-| 0 — Foundation | ✅ |
-| 0.5 — uv environment | ✅ |
-| 0.6 — Persistent KillSwitch | ✅ |
-| 1 — Data infra | ✅ |
-| 1.6 — Market metadata | ✅ |
-| 2 — Backtesting | ✅ |
-| 3 — Paper trading | 🟡 lightweight harness (full NT TradingNode wiring deferred) |
-| 4 — Live trading | ❌ |
-| 5 — Agentic layer | 🟢 foundation (lifecycle + DB + CLI + 3 runbooks); discovery/walk-forward TBD |
+- Perp futures DEX
+- Auth + client scaffolding present but no strategy uses it yet
 
 ## Safety
 
-- **Kill switch:** persists to `data/.kill_switch`; tripping from any process halts all runners. `scripts/halt_trading.py --reason "<text>"` and `scripts/reset_kill_switch.py --confirm` wrap it.
+- **Kill switch:** persists to `data/.kill_switch`; tripping from any process halts all paper/live runners on next watcher tick.
+  ```bash
+  scripts/halt_trading.py --reason "..."     # trip
+  scripts/reset_kill_switch.py --confirm     # clear
+  ```
+- **Live trading triple-gate:** requires `TRADING_MODE=live` AND `LIVE_TRADING_CONFIRMED=true` AND hypothesis state=LIVE.
+- **Auto-retirement watcher:** PAPER strategies → HALTED on single-day -5%; → RETIRED on 7d -15%.
 - **Heartbeat monitor:** trips the kill switch on connection timeout.
 - **Position limits:** per-market USDC caps via `RiskConfig`.
-- **Live trading double opt-in:** requires both `TRADING_MODE=live` and `LIVE_TRADING_CONFIRMED=true`.
-- **Lifecycle human gates:** `PAPER_READY → PAPER` and `LIVE_READY → LIVE` refuse any actor not starting with `user:`.
+- **Lifecycle human gates:** `PAPER_READY → PAPER` and `LIVE_READY → LIVE` refuse non-`user:*` actors.
 
-Default mode is **paper** — live trading requires explicit configuration.
+Default mode is **paper**. Live trading requires explicit triple opt-in.
 
-## Agentic layer
+## Agentic loop
 
-The repo exposes a CLI surface designed for agentic use: every script
-prints JSON to stdout, takes argparse args, and exits 0/non-zero. An
-external agent runtime can drive these via runbooks at `runbooks/*.md`:
+Every script under `scripts/` is JSON-in/JSON-out with explicit exit codes,
+designed to be driven by an external agent runtime (Claude Code or any LLM
+with shell access). See [docs/agentic-loop.md](docs/agentic-loop.md) for the
+full architecture + skill/connector matrix, and [runbooks/](runbooks/) for
+agent-facing prompts:
 
+- `runbooks/discover-strategies.md` — drain `manual_inbox/` + RSS → PROPOSED
+- `runbooks/codegen-strategy.md` — write strategy code + smoke test
+- `runbooks/test-strategy.md` — eval + decision rules
+- `runbooks/optimize-strategy.md` — walk-forward + recent-regime gate
 - `runbooks/onboard-existing-strategy.md` — register a hand-written strategy
-- `runbooks/codegen-strategy.md` — drain `PROPOSED` queue (untrusted-input safe)
-- `runbooks/test-strategy.md` — drain `BACKTEST` queue + apply decision rules
 
-State lives in `research/experiments.db` (sqlite). The only module that
-writes `hypotheses.state` is `src/nautilus_predict/agent/lifecycle.py` —
-every transition is logged with `from_state, to_state, reason, actor`.
+State lives in `research/experiments.db` (sqlite). The only writer to
+`hypotheses.state` and `lifecycle_transitions` is
+`src/nautilus_predict/agent/lifecycle.py` — every transition is logged
+with `from_state, to_state, reason, actor`.
+
+## Operator harness (planned external agent)
+
+Every state change, watcher decision, kill-switch trip, and paper-summary
+delta writes a structured event to `logs/events.jsonl`. The companion
+script `scripts/operator_briefing.py` reads from a byte-offset cursor,
+applies a forwarding policy (all `critical` + dedup'd `warn` per type/slug
++ paper-PnL deltas), and returns JSON the external agent forwards as
+SMS / Slack / email.
+
+The transport (Twilio / Slack / etc.) is NOT in this repo — it's a tiny
+~30-line wrapper that lives on your deployment machine. Recipe in
+[docs/deployment.md](docs/deployment.md).
 
 ## Requirements
 
 - Python 3.12+
-- Rust 1.75+ (for `polyfill-rs`; optional, not yet integrated)
-- Docker (optional)
+- uv (for venv management; `make dev` installs deps via uv)
+- Rust 1.75+ (optional — for `polyfill-rs`; not yet integrated)
+- Docker (optional — only if you want the container deployment path)
 
 ## License
 

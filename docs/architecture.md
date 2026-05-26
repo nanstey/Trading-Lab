@@ -1,5 +1,15 @@
 # System Architecture
 
+> **⚠ Currency note (2026-05-25):** this doc was written before the
+> Phase 5 work (agentic loop, real TradingNode paper + live runners,
+> events log, paper-fill engine). The component-diagram + core
+> principles below are still accurate at the macro level, but the
+> module map / runtime details have moved on. For the current state:
+> - **[AGENTS.md](../AGENTS.md)** — canonical module map (always updated)
+> - **[docs/agentic-loop.md](agentic-loop.md)** — Phase 5 loop architecture
+> - **[docs/deployment.md](deployment.md)** — runtime + operator harness
+> - **[docs/getting-started.md](getting-started.md)** — fresh-machine walkthrough
+
 ## Overview
 
 Nautilus-Predict is an algorithmic trading system built on [NautilusTrader](https://nautilustrader.io),
