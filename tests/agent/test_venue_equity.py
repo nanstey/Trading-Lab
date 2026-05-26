@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from nautilus_predict.agent.venue_equity import (
+from trading_lab.agent.venue_equity import (
     EquitySnapshot,
     PolymarketEquityProvider,
     StaticEquityProvider,

@@ -21,7 +21,7 @@ RUFF    := $(PYTHON) -m ruff
 PYTEST  := $(PYTHON) -m pytest
 MYPY    := $(PYTHON) -m mypy
 PRE_COMMIT := $(PYTHON) -m pre_commit
-SRC := src/nautilus_predict
+SRC := src/trading_lab
 TEST_DIR := tests
 SCRIPTS := scripts
 
@@ -183,12 +183,12 @@ test-cov: ## Run tests and open HTML coverage report
 paper: ## Start paper trading (safe — live feeds, no real orders)
 	@echo "Starting paper trading mode..."
 	@echo "Note: Uses live market data feeds. No real orders placed."
-	TRADING_MODE=paper $(PYTHON) -m nautilus_predict.main --mode paper
+	TRADING_MODE=paper $(PYTHON) -m trading_lab.main --mode paper
 
 .PHONY: backtest
 backtest: ## Run backtesting session on stored Parquet data
 	@echo "Starting backtest session..."
-	TRADING_MODE=backtest $(PYTHON) -m nautilus_predict.main --mode backtest
+	TRADING_MODE=backtest $(PYTHON) -m trading_lab.main --mode backtest
 
 .PHONY: live
 live: ## Start LIVE trading — REAL MONEY, requires double opt-in
@@ -208,7 +208,7 @@ live: ## Start LIVE trading — REAL MONEY, requires double opt-in
 		exit 1; \
 	fi
 	@echo "Live trading confirmed. Starting..."
-	$(PYTHON) -m nautilus_predict.main --mode live
+	$(PYTHON) -m trading_lab.main --mode live
 
 # ---------------------------------------------------------------------------
 # Operations

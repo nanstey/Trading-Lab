@@ -39,9 +39,9 @@ log = logging.getLogger("ingestion")
 
 async def _resolve_tokens(slugs: list[str] | None) -> list[tuple[str, str, str]]:
     """Resolve hypotheses → list of (condition_id, yes_token, no_token)."""
-    from nautilus_predict.agent import lifecycle
-    from nautilus_predict.data.market_catalog import MarketCatalog
-    from nautilus_predict.data.market_filter import MarketCriteria, select_markets
+    from trading_lab.agent import lifecycle
+    from trading_lab.data.market_catalog import MarketCatalog
+    from trading_lab.data.market_filter import MarketCriteria, select_markets
 
     target_states = (
         lifecycle.State.PAPER.value,
@@ -67,9 +67,9 @@ async def _resolve_tokens(slugs: list[str] | None) -> list[tuple[str, str, str]]
 
 
 async def run(args: argparse.Namespace) -> int:
-    from nautilus_predict.agent.events import emit_event
-    from nautilus_predict.data.catalog import DataCatalog
-    from nautilus_predict.data.ingestion import PolymarketDataIngester
+    from trading_lab.agent.events import emit_event
+    from trading_lab.data.catalog import DataCatalog
+    from trading_lab.data.ingestion import PolymarketDataIngester
 
     catalog = DataCatalog(args.data_dir)
     slugs_filter = [s.strip() for s in args.slugs.split(",")] if args.slugs else None
@@ -106,8 +106,8 @@ async def run(args: argparse.Namespace) -> int:
 
     # Use the existing public REST client just to satisfy the ingester
     # constructor — only the WS path is exercised here.
-    from nautilus_predict.venues.polymarket.auth import L2Credentials
-    from nautilus_predict.venues.polymarket.client import PolymarketRestClient
+    from trading_lab.venues.polymarket.auth import L2Credentials
+    from trading_lab.venues.polymarket.client import PolymarketRestClient
 
     creds = L2Credentials(api_key="", api_secret="", api_passphrase="")
     rest = PolymarketRestClient(http_url="https://clob.polymarket.com", creds=creds)

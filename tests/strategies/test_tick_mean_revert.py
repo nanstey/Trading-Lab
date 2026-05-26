@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import deque
 
-from nautilus_predict.strategies.tick_mean_revert import (
+from trading_lab.strategies.tick_mean_revert import (
     TICK_SIZE,
     TickMeanRevertConfig,
     TickMeanRevertStrategy,

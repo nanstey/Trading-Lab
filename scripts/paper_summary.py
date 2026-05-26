@@ -135,7 +135,7 @@ def main() -> int:
     # Emit a paper_summary event so the operator-briefing agent sees
     # progress at a glance.
     try:
-        from nautilus_predict.agent.events import emit_event
+        from trading_lab.agent.events import emit_event
 
         emit_event(
             type="paper_summary",
@@ -280,7 +280,7 @@ def _render_report(
 
 
 def _record_into_db(*, slug, date, pairs, total_pnl, db_path: Path) -> None:
-    from nautilus_predict.agent import lifecycle
+    from trading_lab.agent import lifecycle
 
     if not pairs:
         return

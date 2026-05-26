@@ -52,8 +52,8 @@ def parse_args() -> argparse.Namespace:
 
 
 async def run(args: argparse.Namespace) -> int:
-    from nautilus_predict.data.market_catalog import MarketCatalog, gamma_to_row
-    from nautilus_predict.venues.polymarket.gamma import GammaClient
+    from trading_lab.data.market_catalog import MarketCatalog, gamma_to_row
+    from trading_lab.venues.polymarket.gamma import GammaClient
 
     catalog = MarketCatalog(args.db)
     fetched_at = datetime.now(tz=UTC).isoformat()

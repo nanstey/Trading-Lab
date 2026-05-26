@@ -62,8 +62,8 @@ def main() -> int:
 
     import os
 
-    from nautilus_predict.config import load_config
-    from nautilus_predict.runner.backtest import BacktestRunner, BacktestRunResult
+    from trading_lab.config import load_config
+    from trading_lab.runner.backtest import BacktestRunner, BacktestRunResult
 
     cfg = load_config()
     # CLI overrides used to mutate cfg.arb in-place. That field is gone now

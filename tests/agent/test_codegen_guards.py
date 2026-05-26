@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nautilus_predict.agent.codegen_guards import (
+from trading_lab.agent.codegen_guards import (
     _import_allowed,
     check_source,
 )
@@ -16,7 +16,7 @@ class TestImportAllowed:
 
     def test_whitelisted_dotted(self):
         assert _import_allowed("nautilus_trader.model")
-        assert _import_allowed("nautilus_predict.strategies.foo")
+        assert _import_allowed("trading_lab.strategies.foo")
 
     def test_strict_no_substring_match(self):
         # 're' is whitelisted but 'requests' must not match by prefix

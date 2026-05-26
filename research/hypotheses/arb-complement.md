@@ -18,7 +18,7 @@ market_criteria:
   yes_prob_range: [0.30, 0.70]
   count: 3
   sort_by: volume_24h_usdc
-strategy_module: nautilus_predict.strategies.arb_complement
+strategy_module: trading_lab.strategies.arb_complement
 strategy_class: BinaryArbStrategy
 strategy_config_class: BinaryArbConfig
 ---

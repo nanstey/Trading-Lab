@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from nautilus_predict.venues.hyperliquid.auth import (
+from trading_lab.venues.hyperliquid.auth import (
     current_nonce,
     derive_address,
     sign_l1_action,

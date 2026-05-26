@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from nautilus_predict.risk.kill_switch import KillSwitch, KillSwitchTriggered
+from trading_lab.risk.kill_switch import KillSwitch, KillSwitchTriggered
 
 
 @pytest.fixture(autouse=True)
@@ -30,10 +30,10 @@ def _isolate_kill_switch_flag(tmp_path, monkeypatch):
     flag_path = tmp_path / ".kill_switch"
     events_path = tmp_path / "events.jsonl"
     monkeypatch.setattr(
-        "nautilus_predict.risk.kill_switch.DEFAULT_FLAG_PATH", flag_path
+        "trading_lab.risk.kill_switch.DEFAULT_FLAG_PATH", flag_path
     )
     monkeypatch.setattr(
-        "nautilus_predict.agent.events.DEFAULT_EVENTS_PATH", events_path
+        "trading_lab.agent.events.DEFAULT_EVENTS_PATH", events_path
     )
 
 

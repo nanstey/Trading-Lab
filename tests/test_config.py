@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from nautilus_predict.config import (
+from trading_lab.config import (
     HyperliquidSecrets,
     PolymarketSecrets,
     live_trading_confirmed,
@@ -57,7 +57,7 @@ def yaml_config_dir(tmp_path, monkeypatch):
         "allocations": {},
     }))
     # Point the loader at this temp dir.
-    monkeypatch.setattr("nautilus_predict.config.CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr("trading_lab.config.CONFIG_DIR", cfg_dir)
     return cfg_dir
 
 

@@ -48,7 +48,7 @@ def decide(
     is at resolution, not in-window). We use PnL as the primary signal and
     treat the Sharpe band as a secondary filter only when PnL is positive.
     """
-    from nautilus_predict.agent.lifecycle import State
+    from trading_lab.agent.lifecycle import State
 
     if n_trades < min_trades:
         return State.REJECTED.value, "insufficient_trades"
@@ -91,8 +91,8 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    from nautilus_predict.agent import budget, lifecycle
-    from nautilus_predict.config import load_config
+    from trading_lab.agent import budget, lifecycle
+    from trading_lab.config import load_config
 
     # Budget check
     ok, n, cap = budget.check("backtests", db_path=args.db)

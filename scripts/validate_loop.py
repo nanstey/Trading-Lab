@@ -39,7 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 KNOWN_BAD_SLUG = "loop-validation-bad"
-KNOWN_BAD_STRATEGY_PATH = "src/nautilus_predict/strategies/loop_validation_bad.py"
+KNOWN_BAD_STRATEGY_PATH = "src/trading_lab/strategies/loop_validation_bad.py"
 KNOWN_BAD_TEST_PATH = "tests/strategies/test_loop_validation_bad.py"
 KNOWN_BAD_HYP_PATH = "research/hypotheses/loop-validation-bad.md"
 
@@ -100,7 +100,7 @@ def _validate_known_bad(db_path: Path) -> dict:
         "market_criteria:\n"
         "  outcome_type: binary\n"
         "  count: 1\n"
-        f"strategy_module: nautilus_predict.strategies.loop_validation_bad\n"
+        f"strategy_module: trading_lab.strategies.loop_validation_bad\n"
         "strategy_class: LoopValidationBadStrategy\n"
         "strategy_config_class: LoopValidationBadConfig\n"
         "---\n\n"
@@ -197,7 +197,7 @@ def _validate_known_good(slug: str, db_path: Path) -> dict:
     advanced state, look up the most-recent eval-style experiment and
     apply the same pass criteria.
     """
-    from nautilus_predict.agent import lifecycle
+    from trading_lab.agent import lifecycle
 
     h = lifecycle.get_hypothesis(slug, db_path=db_path)
     if not h:
@@ -312,7 +312,7 @@ def _last_json(stdout: str) -> dict | None:
 
 
 def lifecycle_get(slug: str, db_path: Path) -> dict | None:
-    from nautilus_predict.agent import lifecycle
+    from trading_lab.agent import lifecycle
     h = lifecycle.get_hypothesis(slug, db_path=db_path)
     if not h:
         return None

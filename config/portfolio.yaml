@@ -1,6 +1,6 @@
 # config/portfolio.yaml — risk envelope + per-strategy capital allocations.
 #
-# Enforced by `PortfolioAllocator` (src/nautilus_predict/agent/portfolio.py),
+# Enforced by `PortfolioAllocator` (src/trading_lab/agent/portfolio.py),
 # which sits in front of every order submission in both paper and live
 # runners. The allocator reads current deployed USDC from NT's `Portfolio`
 # and rejects any order that would push the strategy over its per-slug cap.

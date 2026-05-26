@@ -101,8 +101,8 @@ async def main() -> int:
         datefmt="%H:%M:%S",
     )
 
-    from nautilus_predict.data.catalog import DataCatalog
-    from nautilus_predict.data.ingestion import PolymarketDataIngester
+    from trading_lab.data.catalog import DataCatalog
+    from trading_lab.data.ingestion import PolymarketDataIngester
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     catalog = DataCatalog(data_dir=args.output_dir)

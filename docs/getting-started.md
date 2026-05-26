@@ -172,8 +172,8 @@ For a broader test, fetch a few more markets that match the hypothesis:
 ```bash
 .venv/bin/python -c "
 from pathlib import Path
-from nautilus_predict.data.market_catalog import MarketCatalog
-from nautilus_predict.data.market_filter import MarketCriteria, select_markets
+from trading_lab.data.market_catalog import MarketCatalog
+from trading_lab.data.market_filter import MarketCriteria, select_markets
 crit = MarketCriteria(outcome_type='binary', min_volume_24h_usdc=20000,
                        yes_prob_range=(0.30, 0.70), resolved=False, count=5)
 cat = MarketCatalog(Path('data/market_catalog.db'))

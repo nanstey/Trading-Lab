@@ -14,7 +14,7 @@ market_criteria:
   resolved: False
   count: 3
   sort_by: 'volume_24h_usdc'
-strategy_module: nautilus_predict.strategies.tick_mean_revert
+strategy_module: trading_lab.strategies.tick_mean_revert
 strategy_class: TickMeanRevertStrategy
 strategy_config_class: TickMeanRevertConfig
 ---

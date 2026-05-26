@@ -19,5 +19,5 @@ RUN mkdir -p /app/logs /app/data/parquet /app/catalog
 RUN useradd -m -u 1000 trader && chown -R trader:trader /app
 USER trader
 
-ENTRYPOINT ["python3", "-m", "nautilus_predict.main"]
+ENTRYPOINT ["python3", "-m", "trading_lab.main"]
 CMD ["--mode", "live"]

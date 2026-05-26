@@ -65,8 +65,8 @@ def main() -> int:
         datefmt="%H:%M:%S",
     )
 
-    from nautilus_predict.agent import lifecycle
-    from nautilus_predict.agent.events import emit_event
+    from trading_lab.agent import lifecycle
+    from trading_lab.agent.events import emit_event
 
     end_date = datetime.now(tz=UTC).date()
     start_date = (end_date - timedelta(days=args.window_days)).isoformat()

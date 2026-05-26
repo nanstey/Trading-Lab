@@ -193,7 +193,7 @@ def run_single_backtest(
 
 
 def decide_oos(wf: WalkForwardResult) -> tuple[str, str]:
-    from nautilus_predict.agent.lifecycle import State
+    from trading_lab.agent.lifecycle import State
 
     # Only count windows that produced trades — zero-trade windows are
     # data-coverage artefacts, not strategy failures.
@@ -275,7 +275,7 @@ def main() -> int:
         datefmt="%H:%M:%S",
     )
 
-    from nautilus_predict.agent import budget, lifecycle
+    from trading_lab.agent import budget, lifecycle
 
     # Budget guard
     ok, n, cap = budget.check("backtests", db_path=args.db)

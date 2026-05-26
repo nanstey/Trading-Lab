@@ -50,7 +50,7 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    from nautilus_predict.agent import discovery, lifecycle
+    from trading_lab.agent import discovery, lifecycle
 
     candidates = discovery.scan_inbox(args.inbox, db_path=args.db)
     if args.rss:

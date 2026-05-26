@@ -160,7 +160,7 @@ agent-facing prompts:
 
 State lives in `research/experiments.db` (sqlite). The only writer to
 `hypotheses.state` and `lifecycle_transitions` is
-`src/nautilus_predict/agent/lifecycle.py` — every transition is logged
+`src/trading_lab/agent/lifecycle.py` — every transition is logged
 with `from_state, to_state, reason, actor`.
 
 ## Operator harness (planned external agent)

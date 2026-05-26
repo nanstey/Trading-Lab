@@ -28,7 +28,7 @@ load_dotenv()
 
 
 async def main() -> None:
-    from nautilus_predict.venues.polymarket.auth import derive_address, derive_api_key
+    from trading_lab.venues.polymarket.auth import derive_address, derive_api_key
 
     private_key = os.environ.get("POLY_PRIVATE_KEY")
     if not private_key:

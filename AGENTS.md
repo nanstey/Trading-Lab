@@ -32,71 +32,71 @@ external agent runtime can drive a runbook. No `anthropic` SDK dependency.
 ### Configuration & node
 | Module | Purpose |
 |--------|---------|
-| `src/nautilus_predict/config.py` | Single source of truth. Loads `.env` (secrets) + `config/system.yaml` + `config/venues.yaml` + `config/portfolio.yaml`. Use `load_config()`. New paths: `cfg.venues.polymarket.http_url`, `cfg.portfolio.risk.daily_loss_limit_usdc`, `cfg.system.watcher.single_day_limit_pct`. Legacy compat properties (`cfg.polymarket.host`, `cfg.risk.daily_loss_limit_usdc`) preserved. **No `trading_mode` / `TRADING_MODE`** — paper-vs-live is per-strategy via hypothesis state. |
+| `src/trading_lab/config.py` | Single source of truth. Loads `.env` (secrets) + `config/system.yaml` + `config/venues.yaml` + `config/portfolio.yaml`. Use `load_config()`. New paths: `cfg.venues.polymarket.http_url`, `cfg.portfolio.risk.daily_loss_limit_usdc`, `cfg.system.watcher.single_day_limit_pct`. Legacy compat properties (`cfg.polymarket.host`, `cfg.risk.daily_loss_limit_usdc`) preserved. **No `trading_mode` / `TRADING_MODE`** — paper-vs-live is per-strategy via hypothesis state. |
 | `config/system.yaml` | Log level, watcher thresholds, heartbeat timeout, budget caps. Committed. |
 | `config/venues.yaml` | Polymarket + Hyperliquid + Polygon endpoints + contract addresses. Constants. |
 | `config/portfolio.yaml` | Risk envelope + per-strategy capital allocations (`allocations:` map, enforced by `agent/portfolio.py`). |
 | `.env` | **Secrets only**. `POLY_PRIVATE_KEY`, `POLY_API_KEY/SECRET/PASSPHRASE`, `HL_PRIVATE_KEY/ACCOUNT_ADDRESS`, `LIVE_TRADING_CONFIRMED`. Gitignored. |
-| `src/nautilus_predict/node.py` | Legacy `build_node(is_paper)` factory. Superseded — modern runners build their own TradingNode inline. |
-| `src/nautilus_predict/main.py` | Stub — prints pointers to `scripts/paper_run_v2.py` etc. The old `--mode paper/live` flag has no behaviour beyond informational. |
+| `src/trading_lab/node.py` | Legacy `build_node(is_paper)` factory. Superseded — modern runners build their own TradingNode inline. |
+| `src/trading_lab/main.py` | Stub — prints pointers to `scripts/paper_run_v2.py` etc. The old `--mode paper/live` flag has no behaviour beyond informational. |
 
 ### Strategies (canonical)
 | Module | Purpose |
 |--------|---------|
-| `src/nautilus_predict/strategies/base.py` | `NautilusPredictStrategy` — kill_switch-aware base. |
-| `src/nautilus_predict/strategies/arb_complement.py` | **Canonical complement arb.** `BinaryArbStrategy` + `BinaryArbConfig`. Reads best ask directly from delta stream (cache.order_book isn't auto-maintained for delta-only subscriptions). |
+| `src/trading_lab/strategies/base.py` | `TradingLabStrategy` — kill_switch-aware base. |
+| `src/trading_lab/strategies/arb_complement.py` | **Canonical complement arb.** `BinaryArbStrategy` + `BinaryArbConfig`. Reads best ask directly from delta stream (cache.order_book isn't auto-maintained for delta-only subscriptions). |
 
 ### Data layer
 | Module | Purpose |
 |--------|---------|
-| `src/nautilus_predict/data/catalog.py` | PyArrow/Parquet time-series store. `write_trades`, `write_orderbook_snapshot`, `read_trades`, `read_orderbook_history`, `validate_dataset`, `list_available_markets`. Token-id dir names are the full 77-digit decimal. |
-| `src/nautilus_predict/data/ingestion.py` | `PolymarketDataIngester`. `fetch_historical_trades(condition_id, ...)` uses `data-api.polymarket.com/trades?market=<cond>` with offset paging (~3500-record API cap, handled). `fetch_orderbook_snapshots` polls CLOB `/book` (forward-only — no historical book endpoint). |
-| `src/nautilus_predict/data/market_catalog.py` | SQLite metadata store (`data/market_catalog.db`). `MarketCatalog`, `MarketRow`, `gamma_to_row` mapping helper. |
-| `src/nautilus_predict/data/market_filter.py` | `MarketCriteria` + `select_markets(criteria, catalog)`. Frontmatter-friendly via `MarketCriteria.from_dict`. Post-filter `yes_prob_range` reads outcomePrices out of `raw_json`. |
-| `src/nautilus_predict/data/parquet_loader.py` | **Parquet → NautilusTrader.** `make_instrument(token_id, condition_id)` builds a `BettingInstrument`; `load_trades_as_trade_ticks`, `load_book_as_order_book_deltas`, `reconstruct_book_from_trades` for backtest data feed. |
+| `src/trading_lab/data/catalog.py` | PyArrow/Parquet time-series store. `write_trades`, `write_orderbook_snapshot`, `read_trades`, `read_orderbook_history`, `validate_dataset`, `list_available_markets`. Token-id dir names are the full 77-digit decimal. |
+| `src/trading_lab/data/ingestion.py` | `PolymarketDataIngester`. `fetch_historical_trades(condition_id, ...)` uses `data-api.polymarket.com/trades?market=<cond>` with offset paging (~3500-record API cap, handled). `fetch_orderbook_snapshots` polls CLOB `/book` (forward-only — no historical book endpoint). |
+| `src/trading_lab/data/market_catalog.py` | SQLite metadata store (`data/market_catalog.db`). `MarketCatalog`, `MarketRow`, `gamma_to_row` mapping helper. |
+| `src/trading_lab/data/market_filter.py` | `MarketCriteria` + `select_markets(criteria, catalog)`. Frontmatter-friendly via `MarketCriteria.from_dict`. Post-filter `yes_prob_range` reads outcomePrices out of `raw_json`. |
+| `src/trading_lab/data/parquet_loader.py` | **Parquet → NautilusTrader.** `make_instrument(token_id, condition_id)` builds a `BettingInstrument`; `load_trades_as_trade_ticks`, `load_book_as_order_book_deltas`, `reconstruct_book_from_trades` for backtest data feed. |
 
 ### Venues
 | Module | Purpose |
 |--------|---------|
-| `src/nautilus_predict/venues/polymarket/auth.py` | EIP-712 + HMAC-SHA256. `sign_l2_request`, `derive_address`, `derive_api_key`, `L2Credentials`. |
-| `src/nautilus_predict/venues/polymarket/client.py` | `PolymarketRestClient` (aiohttp) + `PolymarketWsClient` (reconnect with backoff). |
-| `src/nautilus_predict/venues/polymarket/gamma.py` | `GammaClient` — public metadata API (`gamma-api.polymarket.com`). |
-| `src/nautilus_predict/venues/polymarket/data.py`, `execution.py`, `factory.py` | NT `LiveMarketDataClient` / `LiveExecutionClient` scaffolding. NOT wired into PaperRunner yet (PaperRunner bypasses NT TradingNode for now). |
-| `src/nautilus_predict/venues/polymarket/orders.py` | Order-build helpers (EIP-712 limit order signing). |
-| `src/nautilus_predict/venues/hyperliquid/` | Hyperliquid adapter scaffolding — not wired into any active strategy. |
+| `src/trading_lab/venues/polymarket/auth.py` | EIP-712 + HMAC-SHA256. `sign_l2_request`, `derive_address`, `derive_api_key`, `L2Credentials`. |
+| `src/trading_lab/venues/polymarket/client.py` | `PolymarketRestClient` (aiohttp) + `PolymarketWsClient` (reconnect with backoff). |
+| `src/trading_lab/venues/polymarket/gamma.py` | `GammaClient` — public metadata API (`gamma-api.polymarket.com`). |
+| `src/trading_lab/venues/polymarket/data.py`, `execution.py`, `factory.py` | NT `LiveMarketDataClient` / `LiveExecutionClient` scaffolding. NOT wired into PaperRunner yet (PaperRunner bypasses NT TradingNode for now). |
+| `src/trading_lab/venues/polymarket/orders.py` | Order-build helpers (EIP-712 limit order signing). |
+| `src/trading_lab/venues/hyperliquid/` | Hyperliquid adapter scaffolding — not wired into any active strategy. |
 
 ### Risk
 | Module | Purpose |
 |--------|---------|
-| `src/nautilus_predict/risk/kill_switch.py` | `KillSwitch` — persists triggered state to `data/.kill_switch` (atomic temp+rename). Refuses to start if a prior process tripped the flag. |
-| `src/nautilus_predict/risk/heartbeat.py` | `HeartbeatWatcher` — trips the kill switch on connection timeout. |
-| `src/nautilus_predict/risk/position_limits.py` | `PositionLimits` — per-market USDC caps. |
-| `src/nautilus_predict/agent/portfolio.py` | `PortfolioAllocator` — per-strategy USDC cap, pre-trade gate at `PolymarketExecutionClient._submit_order`. Reads exposure from NT `Portfolio.net_exposures(venue)` — no own ledger. Caps via `CapSpec` (absolute USDC OR pct-of-equity). Pct caps re-resolve on every `check_order` from the equity provider. Rejected orders emit `OrderRejected` + `portfolio_alloc_breach`. `parse_cap` accepts `400.0`, `0.4`, or `"40%"`. Factory `for_slug(slug, cfg, equity_provider)` resolves: explicit `allocations[slug]` → fair-share (absolute) → legacy `max_position_usdc`. |
-| `src/nautilus_predict/agent/venue_equity.py` | `PolymarketEquityProvider` — async `refresh()` pulls total wallet equity from data-api `/value`; CLOB `/balance-allowance + /data/orders` fallback. Cached; `current_usdc()` is sync. `StaticEquityProvider` for tests. |
+| `src/trading_lab/risk/kill_switch.py` | `KillSwitch` — persists triggered state to `data/.kill_switch` (atomic temp+rename). Refuses to start if a prior process tripped the flag. |
+| `src/trading_lab/risk/heartbeat.py` | `HeartbeatWatcher` — trips the kill switch on connection timeout. |
+| `src/trading_lab/risk/position_limits.py` | `PositionLimits` — per-market USDC caps. |
+| `src/trading_lab/agent/portfolio.py` | `PortfolioAllocator` — per-strategy USDC cap, pre-trade gate at `PolymarketExecutionClient._submit_order`. Reads exposure from NT `Portfolio.net_exposures(venue)` — no own ledger. Caps via `CapSpec` (absolute USDC OR pct-of-equity). Pct caps re-resolve on every `check_order` from the equity provider. Rejected orders emit `OrderRejected` + `portfolio_alloc_breach`. `parse_cap` accepts `400.0`, `0.4`, or `"40%"`. Factory `for_slug(slug, cfg, equity_provider)` resolves: explicit `allocations[slug]` → fair-share (absolute) → legacy `max_position_usdc`. |
+| `src/trading_lab/agent/venue_equity.py` | `PolymarketEquityProvider` — async `refresh()` pulls total wallet equity from data-api `/value`; CLOB `/balance-allowance + /data/orders` fallback. Cached; `current_usdc()` is sync. `StaticEquityProvider` for tests. |
 
 ### Runners
 | Module | Purpose |
 |--------|---------|
-| `src/nautilus_predict/runner/backtest.py` | `BacktestRunner.run_pair / run_hypothesis`. NautilusTrader `BacktestEngine` with `FillModel(prob_fill_on_limit=0.5, prob_slippage=0.5)` and 200ms `LatencyModel`. Terminal PnL is the genuine arb edge; per-pair Sharpe computed from realised pair-PnL series. |
-| `src/nautilus_predict/runner/paper_v2.py` | **`PaperRunnerV2`** — real NT TradingNode + `is_paper=True` + `PolymarketPaperFillEngine` Actor. Production code path. |
-| `src/nautilus_predict/runner/live_v2.py` | **`LiveRunner`** — same TradingNode as PaperRunnerV2, `is_paper=False`. Pre-flight refuses without TRADING_MODE=live, LIVE_TRADING_CONFIRMED=true, L1+L2 creds, kill switch clear, hypothesis state=LIVE. |
-| `src/nautilus_predict/runner/generic_paper.py` | `GenericPaperRunner` — **legacy**. Monkey-patches order_factory; doesn't exercise real exec path. Available via `make paper-run-legacy`. |
-| `src/nautilus_predict/runner/paper.py` | `PaperRunner` — older arb-specific in-process harness. Superseded; kept for reference. |
-| `src/nautilus_predict/runner/live.py` | `LiveRunner` (old placeholder) — superseded by `live_v2.py`. |
+| `src/trading_lab/runner/backtest.py` | `BacktestRunner.run_pair / run_hypothesis`. NautilusTrader `BacktestEngine` with `FillModel(prob_fill_on_limit=0.5, prob_slippage=0.5)` and 200ms `LatencyModel`. Terminal PnL is the genuine arb edge; per-pair Sharpe computed from realised pair-PnL series. |
+| `src/trading_lab/runner/paper_v2.py` | **`PaperRunnerV2`** — real NT TradingNode + `is_paper=True` + `PolymarketPaperFillEngine` Actor. Production code path. |
+| `src/trading_lab/runner/live_v2.py` | **`LiveRunner`** — same TradingNode as PaperRunnerV2, `is_paper=False`. Pre-flight refuses without TRADING_MODE=live, LIVE_TRADING_CONFIRMED=true, L1+L2 creds, kill switch clear, hypothesis state=LIVE. |
+| `src/trading_lab/runner/generic_paper.py` | `GenericPaperRunner` — **legacy**. Monkey-patches order_factory; doesn't exercise real exec path. Available via `make paper-run-legacy`. |
+| `src/trading_lab/runner/paper.py` | `PaperRunner` — older arb-specific in-process harness. Superseded; kept for reference. |
+| `src/trading_lab/runner/live.py` | `LiveRunner` (old placeholder) — superseded by `live_v2.py`. |
 
 ### Agentic layer (Phase 5)
 | Module | Purpose |
 |--------|---------|
-| `src/nautilus_predict/agent/lifecycle.py` | **The only writer** to `lifecycle_transitions` + `hypotheses.state`. `add_hypothesis`, `transition`, `history`, `record_experiment`, `list_experiments`. Atomic via `BEGIN IMMEDIATE`. |
-| `src/nautilus_predict/agent/codegen_guards.py` | AST import-allowlist + lookahead heuristic. `check_file`, `check_source`. |
-| `src/nautilus_predict/agent/budget.py` | Daily token / backtest / paper-start / live-start counters in `budget_ledger`. |
+| `src/trading_lab/agent/lifecycle.py` | **The only writer** to `lifecycle_transitions` + `hypotheses.state`. `add_hypothesis`, `transition`, `history`, `record_experiment`, `list_experiments`. Atomic via `BEGIN IMMEDIATE`. |
+| `src/trading_lab/agent/codegen_guards.py` | AST import-allowlist + lookahead heuristic. `check_file`, `check_source`. |
+| `src/trading_lab/agent/budget.py` | Daily token / backtest / paper-start / live-start counters in `budget_ledger`. |
 | `research/hypotheses/<slug>.md` | YAML frontmatter (market_criteria + strategy class refs) + body. `propose_hypothesis.py` registers these into the DB. |
 | `research/experiments.db` | SQLite. Tables: `hypotheses`, `experiments`, `lifecycle_transitions`, `budget_ledger`. |
 | `runbooks/*.md` | Agent-facing instructions. `onboard-existing-strategy.md`, `test-strategy.md`, `codegen-strategy.md`. |
 
 **Deleted (do not recreate):**
-- `src/nautilus_predict/adapters/` — was dead code; `venues/` is canonical
-- `src/nautilus_predict/strategies/complement_arb.py` — had constructor mismatch
+- `src/trading_lab/adapters/` — was dead code; `venues/` is canonical
+- `src/trading_lab/strategies/complement_arb.py` — had constructor mismatch
 
 ---
 
@@ -205,7 +205,7 @@ make sync-markets-full              # full sync (slower)
     --start 2026-05-10 --end 2026-05-26
 
 # Paper trading (live WS, simulated fills, 60s timed run)
-.venv/bin/python -m nautilus_predict.main --mode paper --duration-secs 60
+.venv/bin/python -m trading_lab.main --mode paper --duration-secs 60
 
 # Agentic flow
 .venv/bin/python scripts/research_cli.py init

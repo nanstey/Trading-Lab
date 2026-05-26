@@ -45,6 +45,6 @@ repos:
         entry: uv run mypy
         language: system
         types: [python]
-        files: ^src/nautilus_predict/
+        files: ^src/trading_lab/
         pass_filenames: false
-        args: [src/nautilus_predict]
+        args: [src/trading_lab]

@@ -1,7 +1,7 @@
 # config/system.yaml — system-wide tunables that don't change often.
 # Committed to git. NEVER put secrets here.
 #
-# Loaded by `nautilus_predict.config.load_config()` and merged with
+# Loaded by `trading_lab.config.load_config()` and merged with
 # `.env` (secrets) + `config/venues.yaml` + `config/portfolio.yaml`.
 
 # Logging verbosity. DEBUG / INFO / WARNING / ERROR.

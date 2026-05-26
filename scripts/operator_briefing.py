@@ -68,9 +68,9 @@ def main() -> int:
     p.add_argument("--md", action="store_true", help="Output markdown instead of JSON")
     args = p.parse_args()
 
-    from nautilus_predict.agent import lifecycle
-    from nautilus_predict.agent.events import file_size, read_events
-    from nautilus_predict.risk.kill_switch import read_flag
+    from trading_lab.agent import lifecycle
+    from trading_lab.agent.events import file_size, read_events
+    from trading_lab.risk.kill_switch import read_flag
 
     # ---- Read events ----
     if args.since_offset is not None:

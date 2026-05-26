@@ -76,9 +76,9 @@ def main() -> int:
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    from nautilus_predict.agent import lifecycle
-    from nautilus_predict.agent.events import emit_event
-    from nautilus_predict.risk.kill_switch import read_flag
+    from trading_lab.agent import lifecycle
+    from trading_lab.agent.events import emit_event
+    from trading_lab.risk.kill_switch import read_flag
 
     initial = _env_float("WATCHER_INITIAL_CAPITAL_USDC", 10_000.0)
     sd_limit_pct = _env_float("WATCHER_SINGLE_DAY_LIMIT_PCT", 5.0)
@@ -231,7 +231,7 @@ def main() -> int:
 
 def _paper_summaries(slug: str, db_path: Path) -> list[dict]:
     """Return paper-summary experiments rows, newest first."""
-    from nautilus_predict.agent import lifecycle
+    from trading_lab.agent import lifecycle
 
     out: list[dict] = []
     for row in lifecycle.list_experiments(slug, db_path=db_path, limit=100):

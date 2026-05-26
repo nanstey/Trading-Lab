@@ -36,7 +36,7 @@ def main() -> int:
     p.add_argument(
         "--strategy-dir",
         type=Path,
-        default=Path("src/nautilus_predict/strategies"),
+        default=Path("src/trading_lab/strategies"),
     )
     p.add_argument(
         "--snapshot-dir",
@@ -58,7 +58,7 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    from nautilus_predict.agent.codegen_guards import check_file
+    from trading_lab.agent.codegen_guards import check_file
 
     strategy_file = args.strategy_dir / f"{args.slug.replace('-', '_')}.py"
     if not strategy_file.exists():

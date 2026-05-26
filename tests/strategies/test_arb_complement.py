@@ -7,7 +7,7 @@ a live NautilusTrader node.
 
 from __future__ import annotations
 
-from nautilus_predict.strategies.arb_complement import (
+from trading_lab.strategies.arb_complement import (
     TAKER_FEE,
     ArbOpportunity,
     BinaryArbConfig,

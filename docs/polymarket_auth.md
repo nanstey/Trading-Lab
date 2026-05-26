@@ -87,7 +87,7 @@ POLY-NONCE: 0
 Call `GET /auth/derive-api-key` with L1 headers to receive L2 credentials:
 
 ```python
-from nautilus_predict.adapters.polymarket.auth import PolymarketAuth
+from trading_lab.adapters.polymarket.auth import PolymarketAuth
 
 auth = PolymarketAuth(private_key="your_private_key")
 creds = await auth.derive_l2_credentials(

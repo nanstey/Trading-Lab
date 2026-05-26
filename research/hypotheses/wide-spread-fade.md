@@ -14,7 +14,7 @@ market_criteria:
   resolved: False
   count: 3
   sort_by: 'volume_24h_usdc'
-strategy_module: nautilus_predict.strategies.wide_spread_fade
+strategy_module: trading_lab.strategies.wide_spread_fade
 strategy_class: WideSpreadFadeStrategy
 strategy_config_class: WideSpreadFadeConfig
 ---

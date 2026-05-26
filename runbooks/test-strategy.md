@@ -27,10 +27,10 @@ e.g., for slug `tick-mean-revert`, replace `'<slug>'` with
 ```bash
 .venv/bin/python -c "
 from pathlib import Path
-from nautilus_predict.data.market_catalog import MarketCatalog
-from nautilus_predict.data.market_filter import MarketCriteria, select_markets
-from nautilus_predict.agent import lifecycle
-from nautilus_predict.data.catalog import DataCatalog
+from trading_lab.data.market_catalog import MarketCatalog
+from trading_lab.data.market_filter import MarketCriteria, select_markets
+from trading_lab.agent import lifecycle
+from trading_lab.data.catalog import DataCatalog
 
 h = lifecycle.get_hypothesis('<slug>')
 crit = MarketCriteria.from_dict(h.market_criteria)

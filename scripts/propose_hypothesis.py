@@ -53,7 +53,7 @@ def main() -> int:
                    help="Override state from frontmatter (e.g., BACKTEST)")
     args = p.parse_args()
 
-    from nautilus_predict.agent import lifecycle
+    from trading_lab.agent import lifecycle
 
     fm, body = parse_md(args.file)
     if not fm:

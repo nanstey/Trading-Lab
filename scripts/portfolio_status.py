@@ -36,18 +36,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from nautilus_predict.agent import portfolio as alloc_mod  # noqa: E402
-from nautilus_predict.agent.events import emit_event  # noqa: E402
-from nautilus_predict.agent.lifecycle import State, list_hypotheses  # noqa: E402
-from nautilus_predict.config import load_config  # noqa: E402
+from trading_lab.agent import portfolio as alloc_mod  # noqa: E402
+from trading_lab.agent.events import emit_event  # noqa: E402
+from trading_lab.agent.lifecycle import State, list_hypotheses  # noqa: E402
+from trading_lab.config import load_config  # noqa: E402
 
 log = logging.getLogger("portfolio_status")
 
 
 def _build_equity_provider(cfg, refresh: bool):
-    from nautilus_predict.agent.venue_equity import PolymarketEquityProvider
-    from nautilus_predict.venues.polymarket.auth import L2Credentials, derive_address
-    from nautilus_predict.venues.polymarket.client import PolymarketRestClient
+    from trading_lab.agent.venue_equity import PolymarketEquityProvider
+    from trading_lab.venues.polymarket.auth import L2Credentials, derive_address
+    from trading_lab.venues.polymarket.client import PolymarketRestClient
 
     pk = cfg.polymarket.private_key.get_secret_value()
     if not pk:

@@ -264,7 +264,7 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
 
     # Surface the venue endpoint we'll actually use (read from venues.yaml).
     try:
-        from nautilus_predict.config import load_config
+        from trading_lab.config import load_config
         _cfg = load_config()
         report.add(CheckResult(
             name="venues.polymarket.http_url",

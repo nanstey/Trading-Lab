@@ -3,13 +3,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "Trading Lab"
+name = "trading-lab"
 version = "0.1.0"
 description = "Algorithmic trading system for Polymarket and Hyperliquid using NautilusTrader"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Nautilus Predict" }]
+authors = [{ name = "Trading Lab" }]
 
 dependencies = [
     # Core trading engine
@@ -55,16 +55,16 @@ dev = [
 ]
 
 [project.scripts]
-np-live = "nautilus_predict.main:run_live"
-np-backtest = "nautilus_predict.main:run_backtest"
+tlab-live = "trading_lab.main:run_live"
+tlab-backtest = "trading_lab.main:run_backtest"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/nautilus_predict"]
+packages = ["src/trading_lab"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "--cov=src/nautilus_predict --cov-report=term-missing -q"
+addopts = "--cov=src/trading_lab --cov-report=term-missing -q"
 
 [tool.ruff]
 line-length = 100

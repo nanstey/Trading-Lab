@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import deque
 from statistics import median
 
-from nautilus_predict.strategies.wide_spread_fade import (
+from trading_lab.strategies.wide_spread_fade import (
     TICK_SIZE,
     WideSpreadFadeConfig,
     WideSpreadFadeStrategy,

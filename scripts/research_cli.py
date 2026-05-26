@@ -53,8 +53,8 @@ def main() -> int:
 
     args = p.parse_args()
 
-    from nautilus_predict.agent import lifecycle
-    from nautilus_predict.agent.budget import consumed
+    from trading_lab.agent import lifecycle
+    from trading_lab.agent.budget import consumed
 
     if args.cmd == "init":
         lifecycle.init_db(args.db)

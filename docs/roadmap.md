@@ -28,7 +28,7 @@ success criteria that must be met before progressing to the next.
 - Document authentication flows
 
 ### Deliverables
-- [x] `src/nautilus_predict/` package consolidated (adapters/ deleted; venues/ canonical)
+- [x] `src/trading_lab/` package consolidated (adapters/ deleted; venues/ canonical)
 - [x] Polymarket auth (EIP-712 + HMAC-SHA256) — `venues/polymarket/auth.py`
 - [x] `KillSwitch`, `HeartbeatWatcher`, `PositionLimits` risk modules
 - [x] `DataCatalog` with PyArrow/Parquet storage
@@ -196,7 +196,7 @@ The codebase provides composable tools and decision playbooks. The agent runtime
 
 ### Deliverables
 - [ ] CLI tool surface: `scripts/eval_strategy.py`, `scripts/list_markets.py`, `scripts/promote_config.py`, `scripts/get_live_pnl.py`, `scripts/halt_trading.py` — all stateless, JSON I/O, predictable exit codes
-- [ ] `src/nautilus_predict/agent/evaluator.py` — pure-Python grid search (no LLM)
+- [ ] `src/trading_lab/agent/evaluator.py` — pure-Python grid search (no LLM)
 - [ ] `runbooks/strategy-evaluator.md` — parameter sweep + promotion rules
 - [ ] `runbooks/live-anomaly-watcher.md` — PnL monitoring + escalation
 - [ ] `runbooks/new-market-onboarding.md` — new-market viability check

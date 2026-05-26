@@ -34,8 +34,8 @@ def parse_args() -> argparse.Namespace:
 async def main() -> None:
     import os
 
-    from nautilus_predict.venues.polymarket.auth import L2Credentials
-    from nautilus_predict.venues.polymarket.client import PolymarketRestClient
+    from trading_lab.venues.polymarket.auth import L2Credentials
+    from trading_lab.venues.polymarket.client import PolymarketRestClient
 
     args = parse_args()
 

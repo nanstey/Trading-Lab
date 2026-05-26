@@ -55,7 +55,7 @@ intentionally narrow: a stage doesn't get tools it doesn't need.
 | Stage | Required tools | Read-only data sources | Writes |
 |---|---|---|---|
 | Discovery | `WebFetch`, `Bash` (curl/feedparser), `Read`, `Write` | RSS feeds, `manual_inbox/` | `research/hypotheses/<slug>.md`, DB row (PROPOSED) |
-| Codegen | `Read`, `Write`, `Edit`, `Bash` | hypothesis MD, AGENTS.md, existing strategy templates | `src/nautilus_predict/strategies/<slug>.py`, `tests/strategies/test_<slug>.py` |
+| Codegen | `Read`, `Write`, `Edit`, `Bash` | hypothesis MD, AGENTS.md, existing strategy templates | `src/trading_lab/strategies/<slug>.py`, `tests/strategies/test_<slug>.py` |
 | Smoke | `Bash` only (just runs the script) | the new strategy file | `research/snapshots/<hash>.py`, state transition |
 | Backtest | `Bash` only | catalog parquet, market_catalog.db | `experiments` row, state transition |
 | Optimize | `Bash` only | catalog parquet | many `experiments` rows, state transition |

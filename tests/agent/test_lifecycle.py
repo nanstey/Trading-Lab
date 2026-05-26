@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from nautilus_predict.agent import lifecycle
+from trading_lab.agent import lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -12,7 +12,7 @@ def _isolate_events(tmp_path, monkeypatch):
     """Each test gets a temp events.jsonl so lifecycle.transition doesn't
     write to the real `logs/events.jsonl`."""
     monkeypatch.setattr(
-        "nautilus_predict.agent.events.DEFAULT_EVENTS_PATH",
+        "trading_lab.agent.events.DEFAULT_EVENTS_PATH",
         tmp_path / "events.jsonl",
     )
 

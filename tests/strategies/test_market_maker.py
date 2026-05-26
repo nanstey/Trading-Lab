@@ -7,7 +7,7 @@ of NautilusTrader runtime infrastructure.
 
 from __future__ import annotations
 
-from nautilus_predict.strategies.market_maker import MarketMakerParams
+from trading_lab.strategies.market_maker import MarketMakerParams
 
 
 class TestMarketMakerParams:

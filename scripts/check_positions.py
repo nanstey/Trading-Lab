@@ -22,9 +22,9 @@ load_dotenv()
 
 async def main() -> None:
 
-    from nautilus_predict.venues.hyperliquid.client import HyperliquidRestClient
-    from nautilus_predict.venues.polymarket.auth import L2Credentials
-    from nautilus_predict.venues.polymarket.client import PolymarketRestClient
+    from trading_lab.venues.hyperliquid.client import HyperliquidRestClient
+    from trading_lab.venues.polymarket.auth import L2Credentials
+    from trading_lab.venues.polymarket.client import PolymarketRestClient
 
     # Polymarket
     pm_creds = L2Credentials(

@@ -2,7 +2,7 @@
 
 **For agents.** Use this one-shot to register a hand-written strategy into the
 research lifecycle DB. Common case: `BinaryArbStrategy` already exists in
-`src/nautilus_predict/strategies/arb_complement.py` and its hypothesis MD is
+`src/trading_lab/strategies/arb_complement.py` and its hypothesis MD is
 at `research/hypotheses/arb-complement.md` — we want it visible to
 `research_cli.py` and ready for `eval_strategy.py`.
 

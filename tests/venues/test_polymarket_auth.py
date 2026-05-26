@@ -11,7 +11,7 @@ import time
 from base64 import b64encode
 from unittest.mock import patch
 
-from nautilus_predict.venues.polymarket.auth import (
+from trading_lab.venues.polymarket.auth import (
     L2Credentials,
     derive_address,
     sign_eip712_message,
@@ -82,7 +82,7 @@ class TestSignL2Request:
     def test_signature_differs_by_method(self) -> None:
         creds = self._make_creds()
         # Use fixed timestamp to isolate the method-dependency of the signature
-        with patch("nautilus_predict.venues.polymarket.auth.time") as mock_time:
+        with patch("trading_lab.venues.polymarket.auth.time") as mock_time:
             mock_time.time.return_value = 1700000000.0
             sig_get = sign_l2_request(creds, "GET", "/orders").as_dict()["POLY-SIGNATURE"]
             sig_post = sign_l2_request(creds, "POST", "/orders").as_dict()["POLY-SIGNATURE"]
@@ -90,7 +90,7 @@ class TestSignL2Request:
 
     def test_body_affects_signature(self) -> None:
         creds = self._make_creds()
-        with patch("nautilus_predict.venues.polymarket.auth.time") as mock_time:
+        with patch("trading_lab.venues.polymarket.auth.time") as mock_time:
             mock_time.time.return_value = 1700000000.0
             sig_empty = sign_l2_request(creds, "POST", "/order", "").as_dict()["POLY-SIGNATURE"]
             sig_body = sign_l2_request(creds, "POST", "/order", '{"test":1}').as_dict()["POLY-SIGNATURE"]

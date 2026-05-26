@@ -30,7 +30,7 @@ def main() -> int:
     p.add_argument("--flag-path", type=Path, default=Path("data/.kill_switch"))
     args = p.parse_args()
 
-    from nautilus_predict.risk.kill_switch import clear_flag, read_flag
+    from trading_lab.risk.kill_switch import clear_flag, read_flag
 
     existing = read_flag(args.flag_path)
     if not existing:

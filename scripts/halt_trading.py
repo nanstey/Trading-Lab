@@ -39,7 +39,7 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    from nautilus_predict.risk.kill_switch import write_flag
+    from trading_lab.risk.kill_switch import write_flag
 
     write_flag(reason=args.reason, actor=args.actor, path=args.flag_path)
     print(json.dumps({

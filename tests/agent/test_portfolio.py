@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nautilus_predict.agent.portfolio import (
+from trading_lab.agent.portfolio import (
     AllocatorDecision,
     CapSpec,
     PortfolioAllocator,
@@ -27,7 +27,7 @@ from nautilus_predict.agent.portfolio import (
     parse_cap,
     validate_allocations,
 )
-from nautilus_predict.agent.venue_equity import StaticEquityProvider
+from trading_lab.agent.venue_equity import StaticEquityProvider
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ def test_for_slug_explicit_pct_without_equity_raises():
 
 
 def test_for_slug_fair_share_when_unspecified(monkeypatch):
-    import nautilus_predict.agent.lifecycle as lc
+    import trading_lab.agent.lifecycle as lc
     monkeypatch.setattr(
         lc, "list_hypotheses",
         lambda state=None, **kw: [object()] * 2,

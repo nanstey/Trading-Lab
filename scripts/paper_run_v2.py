@@ -43,11 +43,11 @@ def main() -> int:
         datefmt="%H:%M:%S",
     )
 
-    from nautilus_predict.agent import lifecycle
-    from nautilus_predict.config import load_config
-    from nautilus_predict.data.market_catalog import MarketCatalog
-    from nautilus_predict.data.market_filter import MarketCriteria, select_markets
-    from nautilus_predict.runner.paper_v2 import PaperRunnerV2
+    from trading_lab.agent import lifecycle
+    from trading_lab.config import load_config
+    from trading_lab.data.market_catalog import MarketCatalog
+    from trading_lab.data.market_filter import MarketCriteria, select_markets
+    from trading_lab.runner.paper_v2 import PaperRunnerV2
 
     h = lifecycle.get_hypothesis(args.slug)
     if not h:
