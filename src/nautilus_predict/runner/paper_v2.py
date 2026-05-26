@@ -221,6 +221,38 @@ class PaperRunnerV2:
             for instr in instruments.values():
                 fill_engine.register_instrument(instr.id)
 
+        # Wire per-strategy capital allocator (Portfolio-backed pre-trade gate).
+        if exec_client is not None:
+            from nautilus_predict.agent import portfolio as _alloc_mod
+            from nautilus_predict.agent.events import emit_event
+
+            warnings = _alloc_mod.validate_allocations(self._config)
+            for w in warnings:
+                log.warning("allocator config warning: %s", w)
+                emit_event(
+                    type="portfolio_config_warning",
+                    summary=w, severity="warn", slug=self._slug, data={},
+                )
+
+            equity_provider = self._build_equity_provider()
+            allocator = _alloc_mod.for_slug(
+                self._slug, self._config, equity_provider=equity_provider,
+            )
+            try:
+                allocator.set_portfolio(node.portfolio)
+            except Exception as exc:
+                log.warning("could not attach portfolio to allocator: %s", exc)
+            exec_client._portfolio_allocator = allocator  # type: ignore[attr-defined]
+            emit_event(
+                type="portfolio_alloc_armed",
+                summary=(
+                    f"{self._slug}: paper allocator armed cap=$"
+                    f"{allocator.cap_usdc:.2f} ({allocator.cap_spec.describe()})"
+                ),
+                severity="info", slug=self._slug,
+                data=allocator.snapshot(),
+            )
+
         strategy = self._find_strategy(node, self._strategy_class)
         if strategy is not None:
             for cid, yes_id, no_id in self._pairs:
@@ -333,3 +365,55 @@ class PaperRunnerV2:
         except Exception as exc:
             log.warning("_find_data_client failed: %s", exc)
             return None
+
+    def _build_equity_provider(self):
+        """
+        Build + prime a `PolymarketEquityProvider`. Returns None if the
+        wallet isn't configured (allocator falls back to absolute caps).
+
+        Priming is best-effort: a failed refresh during paper startup
+        is logged but doesn't block the run. Subsequent `check_order`
+        calls against a pct cap will return 0 (block) until refreshed.
+        """
+        import asyncio
+
+        from nautilus_predict.agent.venue_equity import PolymarketEquityProvider
+        from nautilus_predict.venues.polymarket.auth import L2Credentials, derive_address
+        from nautilus_predict.venues.polymarket.client import PolymarketRestClient
+
+        pk = self._config.polymarket.private_key.get_secret_value()
+        if not pk:
+            log.warning("equity: no POLY_PRIVATE_KEY; pct caps will resolve to 0")
+            return None
+        try:
+            wallet = derive_address(pk)
+        except Exception as exc:
+            log.warning("equity: could not derive wallet address: %s", exc)
+            return None
+
+        rest = None
+        if self._config.polymarket.has_l2_credentials:
+            try:
+                creds = L2Credentials(
+                    api_key=self._config.polymarket.api_key,
+                    api_secret=self._config.polymarket.api_secret.get_secret_value(),
+                    api_passphrase=self._config.polymarket.api_passphrase.get_secret_value(),
+                )
+                rest = PolymarketRestClient(
+                    http_url=self._config.polymarket.host, creds=creds,
+                )
+            except Exception as exc:
+                log.debug("equity: could not build PM rest client: %s", exc)
+
+        provider = PolymarketEquityProvider(wallet_address=wallet, rest_client=rest)
+        try:
+            asyncio.run(provider.refresh())
+            log.info(
+                "equity: primed for %s — total=$%.2f (source=%s)",
+                wallet[:10] + "...",
+                provider.current_usdc(),
+                provider.snapshot.source if provider.snapshot else "n/a",
+            )
+        except Exception as exc:
+            log.warning("equity: initial refresh failed (will retry on demand): %s", exc)
+        return provider

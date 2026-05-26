@@ -74,6 +74,7 @@ help:
 	@echo ""
 	@echo "Operator harness:"
 	@echo "  make operator-brief [MD=1]                         JSON (or --md) for SMS agent"
+	@echo "  make portfolio-status [MD=1]                       Per-slug capital caps + headroom"
 	@echo ""
 	@echo "Environment + creds:"
 	@echo "  make check-env                                     Validate .env + connectivity"
@@ -313,6 +314,10 @@ rolling-eval: ## Re-evaluate each PAPER strategy on the last WINDOW_DAYS of data
 .PHONY: operator-brief
 operator-brief: ## Operator briefing (JSON for the remote agent; --md for human-readable)
 	$(PYTHON) $(SCRIPTS)/operator_briefing.py $(if $(MD),--md,)
+
+.PHONY: portfolio-status
+portfolio-status: ## Show per-slug capital caps. MD=1 for markdown; REFRESH=1 to fetch live PM equity
+	$(PYTHON) $(SCRIPTS)/portfolio_status.py $(if $(MD),--md,) $(if $(REFRESH),--refresh,)
 
 # ---------------------------------------------------------------------------
 # Docker

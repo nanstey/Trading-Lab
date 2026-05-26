@@ -1,23 +1,51 @@
-# config/portfolio.yaml — risk envelope + (future) capital allocation.
+# config/portfolio.yaml — risk envelope + per-strategy capital allocations.
 #
-# The risk envelope applies to EVERY strategy by default. When the
-# multi-strategy capital allocator lands, per-slug allocations will go
-# under `allocations:` below.
+# Enforced by `PortfolioAllocator` (src/nautilus_predict/agent/portfolio.py),
+# which sits in front of every order submission in both paper and live
+# runners. The allocator reads current deployed USDC from NT's `Portfolio`
+# and rejects any order that would push the strategy over its per-slug cap.
 
 risk:
-  # Maximum net USDC position per market (single token).
+  # Per-instrument (single token) cap — used as final-fallback cap for a
+  # slug when neither `allocations` NOR fair-share apply.
   max_position_usdc: 100.0
-  # Maximum aggregate USDC exposure across all markets.
+  # Total USDC envelope across ALL strategies on this account. Used by:
+  #   - the fair-share fallback when a slug has no entry in `allocations`
+  #   - `scripts/portfolio_status.py` over-allocation detection for ABSOLUTE caps
   max_total_exposure_usdc: 1000.0
-  # Daily loss limit. MUST be negative.
-  # When realised PnL drops below this in a day, the kill switch trips
-  # and ALL paper/live runners halt on the next watcher tick.
+  # Daily loss limit. MUST be negative. When realised PnL drops below this
+  # in a day, the kill switch trips and ALL paper/live runners halt on the
+  # next watcher tick.
   daily_loss_limit_usdc: -200.0
 
-# Per-strategy capital allocations — TODO (multi-strategy allocator).
-# When implemented:
-#   allocations:
-#     <slug>: <usdc>     # capital ceiling vended to that strategy on start
-# Until then, each strategy thinks it owns `risk.max_position_usdc`
-# independently; with N PAPER strategies you're over-allocated Nx.
-allocations: {}
+# Per-strategy capital ceilings. Each running strategy gets its own
+# allocator with the cap set from this map (preferred), or fair-share of
+# `max_total_exposure_usdc` across active PAPER+LIVE strategies (fallback).
+#
+# Two cap forms — mix and match per slug:
+#
+#   ABSOLUTE USDC (constant for the run):
+#     tick-mean-revert: 400.0
+#
+#   PERCENT OF VENUE EQUITY (adapts as the wallet grows / shrinks):
+#     tick-mean-revert: "40%"          # string form
+#     tick-mean-revert: 0.4            # float form (anything in (0, 1] is pct)
+#
+# Pct caps are resolved against the LIVE Polymarket wallet equity (free
+# USDC + open position value), pulled at runner startup via the data-api
+# `/value` endpoint. The cap re-resolves on every `check_order`, so a
+# strategy that grows the account gets a bigger cap automatically; a
+# strategy that loses money gets de-risked. Refresh manually any time
+# with: `make portfolio-status MD=1 REFRESH=1`.
+#
+# Invariants (warnings emitted at startup if violated):
+#   - sum(absolute entries) <= max_total_exposure_usdc
+#   - sum(pct entries) <= 1.0 (100%)
+#
+# Current allocation: pct-of-equity, summing to 90% (10% buffer for new
+# strategies + drawdown headroom). Bigger slice to the more-validated
+# strategies; promote a strategy by raising its pct.
+allocations:
+  arb-complement:   "40%"   # canonical complement-arb, optimised, lowest variance
+  tick-mean-revert: "30%"   # optimised, PAPER
+  wide-spread-fade: "20%"   # PAPER via override; smaller slice until more validation

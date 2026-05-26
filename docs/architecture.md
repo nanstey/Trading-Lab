@@ -96,18 +96,33 @@ Strategy.on_book_update() decides to quote
     │
     │  Check kill switch and position limits
     ▼
-PolymarketClient.place_order() [Python path]
-or
-polyfill-rs::cancel_replace() [Rust hot path]
+strategy.submit_order(order)         (NT Strategy API)
     │
-    │  Signed JSON payload
     ▼
-Polymarket CLOB WebSocket / REST
+PolymarketExecutionClient._submit_order
     │
-    │  Order ACK / rejection
+    │  PortfolioAllocator.check_order(order)
+    │    └─ reads exposure from NT Portfolio.net_exposures(POLYMARKET)
+    │    └─ rejects + emits portfolio_alloc_breach if cap exceeded
+    │
+    │  (accepted)
+    ▼
+Paper:  hand to PolymarketPaperFillEngine (no venue call)
+Live:   POST to Polymarket CLOB REST + user-channel WS
+    │
+    ▼
+OrderFilled event on the message bus
+    │
+    ▼
+NT Portfolio updates net_exposure for the instrument
+    │
     ▼
 Strategy.on_fill()
 ```
+
+The allocator sits on the order-submission path for BOTH paper and live
+because it gates BEFORE the `is_paper` branch in
+`PolymarketExecutionClient._submit_order`. Same enforcement either way.
 
 ---
 

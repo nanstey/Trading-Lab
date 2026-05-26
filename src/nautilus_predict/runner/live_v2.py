@@ -221,6 +221,38 @@ class LiveRunner:
         if data_client is not None:
             data_client.register_tokens(token_map)
 
+        # Wire per-strategy capital allocator (Portfolio-backed pre-trade gate).
+        exec_client = self._find_exec_client(node, "POLYMARKET")
+        if exec_client is not None:
+            from nautilus_predict.agent import portfolio as _alloc_mod
+
+            warnings = _alloc_mod.validate_allocations(self._config)
+            for w in warnings:
+                log.critical("allocator config warning: %s", w)
+                emit_event(
+                    type="portfolio_config_warning",
+                    summary=w, severity="critical", slug=self._slug, data={},
+                )
+
+            equity_provider = self._build_equity_provider(ks_rest_client)
+            allocator = _alloc_mod.for_slug(
+                self._slug, self._config, equity_provider=equity_provider,
+            )
+            try:
+                allocator.set_portfolio(node.portfolio)
+            except Exception as exc:
+                log.critical("could not attach portfolio to allocator: %s", exc)
+            exec_client._portfolio_allocator = allocator  # type: ignore[attr-defined]
+            emit_event(
+                type="portfolio_alloc_armed",
+                summary=(
+                    f"{self._slug}: LIVE allocator armed cap=$"
+                    f"{allocator.cap_usdc:.2f} ({allocator.cap_spec.describe()})"
+                ),
+                severity="critical", slug=self._slug,
+                data=allocator.snapshot(),
+            )
+
         # Register pairs / instruments with the strategy.
         strategy = self._find_strategy(node, self._strategy_class)
         if strategy is not None:
@@ -318,3 +350,50 @@ class LiveRunner:
         except Exception as exc:
             log.warning("_find_data_client failed: %s", exc)
             return None
+
+    def _find_exec_client(self, node, venue_str: str):
+        try:
+            from nautilus_trader.model.identifiers import ClientId
+
+            cid = ClientId(venue_str)
+            return node.kernel.exec_engine._clients[cid]  # type: ignore[attr-defined]
+        except Exception as exc:
+            log.warning("_find_exec_client failed: %s", exc)
+            return None
+
+    def _build_equity_provider(self, rest_client):
+        """
+        Live runner: equity refresh is REQUIRED. If it fails we still build
+        the provider (so absolute caps work) but emit a critical event.
+        Pct caps will resolve to 0 (block all trading) until refresh succeeds —
+        that's the safe direction for live.
+        """
+        import asyncio
+
+        from nautilus_predict.agent.venue_equity import PolymarketEquityProvider
+        from nautilus_predict.venues.polymarket.auth import derive_address
+
+        pk = self._config.polymarket.private_key.get_secret_value()
+        try:
+            wallet = derive_address(pk)
+        except Exception as exc:
+            log.critical("equity: could not derive wallet address: %s", exc)
+            return None
+
+        provider = PolymarketEquityProvider(
+            wallet_address=wallet, rest_client=rest_client,
+        )
+        try:
+            asyncio.run(provider.refresh())
+            log.critical(
+                "equity: LIVE primed for %s — total=$%.2f (source=%s)",
+                wallet[:10] + "...",
+                provider.current_usdc(),
+                provider.snapshot.source if provider.snapshot else "n/a",
+            )
+        except Exception as exc:
+            log.critical(
+                "equity: LIVE refresh failed (pct caps will block until "
+                "refreshed manually): %s", exc,
+            )
+        return provider

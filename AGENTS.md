@@ -35,7 +35,7 @@ external agent runtime can drive a runbook. No `anthropic` SDK dependency.
 | `src/nautilus_predict/config.py` | Single source of truth. Loads `.env` (secrets) + `config/system.yaml` + `config/venues.yaml` + `config/portfolio.yaml`. Use `load_config()`. New paths: `cfg.venues.polymarket.http_url`, `cfg.portfolio.risk.daily_loss_limit_usdc`, `cfg.system.watcher.single_day_limit_pct`. Legacy compat properties (`cfg.polymarket.host`, `cfg.risk.daily_loss_limit_usdc`) preserved. **No `trading_mode` / `TRADING_MODE`** — paper-vs-live is per-strategy via hypothesis state. |
 | `config/system.yaml` | Log level, watcher thresholds, heartbeat timeout, budget caps. Committed. |
 | `config/venues.yaml` | Polymarket + Hyperliquid + Polygon endpoints + contract addresses. Constants. |
-| `config/portfolio.yaml` | Risk envelope + (future) per-strategy capital allocations. |
+| `config/portfolio.yaml` | Risk envelope + per-strategy capital allocations (`allocations:` map, enforced by `agent/portfolio.py`). |
 | `.env` | **Secrets only**. `POLY_PRIVATE_KEY`, `POLY_API_KEY/SECRET/PASSPHRASE`, `HL_PRIVATE_KEY/ACCOUNT_ADDRESS`, `LIVE_TRADING_CONFIRMED`. Gitignored. |
 | `src/nautilus_predict/node.py` | Legacy `build_node(is_paper)` factory. Superseded — modern runners build their own TradingNode inline. |
 | `src/nautilus_predict/main.py` | Stub — prints pointers to `scripts/paper_run_v2.py` etc. The old `--mode paper/live` flag has no behaviour beyond informational. |
@@ -71,6 +71,8 @@ external agent runtime can drive a runbook. No `anthropic` SDK dependency.
 | `src/nautilus_predict/risk/kill_switch.py` | `KillSwitch` — persists triggered state to `data/.kill_switch` (atomic temp+rename). Refuses to start if a prior process tripped the flag. |
 | `src/nautilus_predict/risk/heartbeat.py` | `HeartbeatWatcher` — trips the kill switch on connection timeout. |
 | `src/nautilus_predict/risk/position_limits.py` | `PositionLimits` — per-market USDC caps. |
+| `src/nautilus_predict/agent/portfolio.py` | `PortfolioAllocator` — per-strategy USDC cap, pre-trade gate at `PolymarketExecutionClient._submit_order`. Reads exposure from NT `Portfolio.net_exposures(venue)` — no own ledger. Caps via `CapSpec` (absolute USDC OR pct-of-equity). Pct caps re-resolve on every `check_order` from the equity provider. Rejected orders emit `OrderRejected` + `portfolio_alloc_breach`. `parse_cap` accepts `400.0`, `0.4`, or `"40%"`. Factory `for_slug(slug, cfg, equity_provider)` resolves: explicit `allocations[slug]` → fair-share (absolute) → legacy `max_position_usdc`. |
+| `src/nautilus_predict/agent/venue_equity.py` | `PolymarketEquityProvider` — async `refresh()` pulls total wallet equity from data-api `/value`; CLOB `/balance-allowance + /data/orders` fallback. Cached; `current_usdc()` is sync. `StaticEquityProvider` for tests. |
 
 ### Runners
 | Module | Purpose |
@@ -123,6 +125,7 @@ Every script under `scripts/` is designed for agentic use: argparse + JSON on st
 | `scripts/paper_summary.py --slug [--date]` | Pair entry/close signals → realised PnL report + experiments row. |
 | `scripts/paper_watcher.py` | Auto-retirement (single-day -5% → HALTED, 7d -15% → RETIRED). |
 | `scripts/operator_briefing.py [--md]` | Read events log + apply forwarding policy → JSON for external SMS agent. |
+| `scripts/portfolio_status.py [--md] [--refresh] [--no-event]` | Per-slug capital caps (resolved against live PM equity with `--refresh`) + headroom vs `max_total_exposure_usdc`. Exits 2 on over-allocation. Emits `portfolio_status` event. |
 | `scripts/discover_strategies.py [--rss]` | Drain manual_inbox + (opt) RSS into PROPOSED. |
 | `scripts/validate_loop.py` | Phase 5.11 — drives known-bad + known-good through the loop. |
 | `scripts/halt_trading.py --reason <text>` | Write `data/.kill_switch` — halts all paper/live runners. |
@@ -230,7 +233,9 @@ make sync-markets-full              # full sync (slower)
 | Polymarket L2 creds | `cfg.polymarket_secrets.api_key/secret/passphrase` | `.env` (`POLY_*`) |
 | Hyperliquid L1 key | `cfg.hyperliquid_secrets.private_key` | `.env` (`HL_PRIVATE_KEY`) |
 | Daily loss limit | `cfg.portfolio.risk.daily_loss_limit_usdc` | `config/portfolio.yaml` |
-| Max position USDC | `cfg.portfolio.risk.max_position_usdc` | `config/portfolio.yaml` |
+| Max position USDC (per market) | `cfg.portfolio.risk.max_position_usdc` | `config/portfolio.yaml` |
+| Total exposure envelope | `cfg.portfolio.risk.max_total_exposure_usdc` | `config/portfolio.yaml` |
+| Per-slug capital cap | `cfg.portfolio.allocations[slug]` (absolute `400.0` OR pct `"40%"` / `0.4`) | `config/portfolio.yaml` |
 | Heartbeat timeout | `cfg.system.heartbeat_timeout_secs` | `config/system.yaml` |
 | Watcher thresholds | `cfg.system.watcher.*` | `config/system.yaml` |
 | Daily budget caps | `cfg.system.budget.*` | `config/system.yaml` |

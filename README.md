@@ -16,6 +16,7 @@ paper / live** — that share the same strategy code paths.
 | **Agentic loop** — sqlite experiment DB, lifecycle state machine, codegen guards, JSON-I/O CLI surface, 4 runbooks | ✅ |
 | **Operator harness** — `logs/events.jsonl` + briefing script with built-in forwarding policy; ready for an external SMS/Slack/email agent | ✅ |
 | **Risk layer** — persistent kill switch, heartbeat watcher, position limits, paper auto-retirement (5%/15% rules) | ✅ |
+| **Capital allocator** — per-slug USDC caps enforced at the order-submission boundary; pre-trade reject on breach; emits `portfolio_alloc_breach` events | ✅ |
 
 For a deep-dive on the architecture, see [docs/architecture.md](docs/architecture.md),
 [docs/agentic-loop.md](docs/agentic-loop.md), and
@@ -137,7 +138,8 @@ make research-status SLUG=tick-mean-revert # one slug + history + experiments
 - **Live trading double-gate:** requires `LIVE_TRADING_CONFIRMED=true` in `.env` (system gate) AND hypothesis state=LIVE (per-strategy gate).
 - **Auto-retirement watcher:** PAPER strategies → HALTED on single-day -5%; → RETIRED on 7d -15%.
 - **Heartbeat monitor:** trips the kill switch on connection timeout.
-- **Position limits:** per-market USDC caps via `RiskConfig`.
+- **Per-market position limits:** per-market USDC caps via `RiskConfig.max_position_usdc`.
+- **Per-strategy capital cap:** `PortfolioAllocator` rejects any order that would push the strategy past its allocation in `config/portfolio.yaml`. Caps can be **absolute USDC** (`400.0`) or **percent-of-equity** (`"40%"` / `0.4`); pct caps resolve against live Polymarket wallet equity at runner startup and re-resolve on every order, so caps grow and shrink with the wallet automatically. Reads deployed exposure from NT's `Portfolio` — single source of truth. Inspect with `make portfolio-status [MD=1] [REFRESH=1]`.
 - **Lifecycle human gates:** `PAPER_READY → PAPER` and `LIVE_READY → LIVE` refuse non-`user:*` actors.
 
 Default mode is **paper**. Live trading requires explicit triple opt-in.

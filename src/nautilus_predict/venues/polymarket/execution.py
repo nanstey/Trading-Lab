@@ -96,6 +96,11 @@ class PolymarketExecutionClient(LiveExecutionClient):
         # sets this attribute after constructing both components.
         self._paper_fill_engine: Any = None
 
+        # Pre-trade capital-cap gate. Runner constructs a `PortfolioAllocator`
+        # per slug and assigns it here after `node.build()`. None = no gate
+        # (legacy / tests). See `nautilus_predict.agent.portfolio`.
+        self._portfolio_allocator: Any = None
+
     async def _connect(self) -> None:
         log.info("PolymarketExecutionClient connecting", paper=self._is_paper)
         # Subscribe to user channel for real-time order updates
@@ -119,6 +124,45 @@ class PolymarketExecutionClient(LiveExecutionClient):
         )
 
         self._send_order_submitted(order)
+
+        # Pre-trade capital-cap gate. If the allocator is wired and rejects
+        # this order, we publish an OrderRejected (so NT's state machine
+        # tracks it as a terminal-state order rather than a pending one)
+        # and emit a `portfolio_alloc_breach` event for the operator agent.
+        if self._portfolio_allocator is not None:
+            try:
+                decision = self._portfolio_allocator.check_order(order)
+            except Exception as exc:
+                log.warning("allocator.check_order raised; failing open: %s", exc)
+                decision = None
+            if decision is not None and not decision.accepted:
+                self._send_order_rejected(order, reason=decision.reason)
+                try:
+                    from nautilus_predict.agent.events import emit_event
+
+                    emit_event(
+                        type="portfolio_alloc_breach",
+                        summary=(
+                            f"{self._portfolio_allocator.slug}: order rejected — "
+                            f"{decision.reason}"
+                        ),
+                        severity="warn",
+                        slug=self._portfolio_allocator.slug,
+                        data={
+                            "instrument_id": str(order.instrument_id),
+                            "side": str(order.side),
+                            "qty": float(order.quantity),
+                            "price": float(order.price),
+                            "proposed_notional_usdc": decision.proposed_notional_usdc,
+                            "open_notional_before": decision.open_notional_before,
+                            "open_notional_after": decision.open_notional_after,
+                            "cap_usdc": decision.cap_usdc,
+                            "is_paper": self._is_paper,
+                        },
+                    )
+                except Exception as exc:
+                    log.debug("emit_event failed (non-fatal): %s", exc)
+                return
 
         if self._is_paper:
             # Paper mode — acknowledge immediately and hand the order to the
