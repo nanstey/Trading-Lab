@@ -41,6 +41,9 @@ dependencies = [
 
     # RSS / Atom feed parsing for discovery sources
     "feedparser>=6.0.0",
+
+    # YouTube transcripts for strategy idea capture
+    "youtube-transcript-api>=0.6.2",
 ]
 
 [project.optional-dependencies]

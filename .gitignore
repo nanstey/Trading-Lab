@@ -84,6 +84,8 @@ logs/*
 research/experiments.db
 research/snapshots/
 research/manual_inbox/
+research/captures/
+research/link_dropbox/
 research/budget.json
 research/logs/
 

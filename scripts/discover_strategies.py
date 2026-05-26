@@ -18,9 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -50,7 +48,7 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    from trading_lab.agent import discovery, lifecycle
+    from trading_lab.agent import discovery
 
     candidates = discovery.scan_inbox(args.inbox, db_path=args.db)
     if args.rss:
@@ -60,7 +58,6 @@ def main() -> int:
         return 0
 
     discovered: list[dict] = []
-    archived_root = args.inbox / ".archived" / datetime.now(tz=UTC).strftime("%Y-%m-%d")
 
     for cand in candidates[: args.max_per_run]:
         record = {
@@ -73,30 +70,20 @@ def main() -> int:
             discovered.append(record)
             continue
 
-        md_path = discovery.candidate_to_hypothesis_md(cand, args.hypotheses_dir)
         try:
-            lifecycle.add_hypothesis(
-                slug=cand.slug,
-                state=lifecycle.State.PROPOSED.value,
-                source_url=cand.source_url,
-                source_type=cand.source_type,
-                summary=cand.summary[:1000],
-                market_criteria=cand.market_criteria,
-                actor=args.actor,
+            registered = discovery.register_candidate(
+                cand,
                 db_path=args.db,
+                hypotheses_dir=args.hypotheses_dir,
+                actor=args.actor,
+                inbox_dir=args.inbox,
             )
         except Exception as exc:
             record["error"] = str(exc)
             discovered.append(record)
             continue
 
-        # Archive the source file.
-        src = args.inbox / f"{cand.slug}.md"
-        if src.exists():
-            archived_root.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(archived_root / src.name))
-
-        record["hypothesis_path"] = str(md_path)
+        record["hypothesis_path"] = registered["hypothesis_path"]
         discovered.append(record)
 
     print(json.dumps({

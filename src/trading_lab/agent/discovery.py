@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -367,3 +368,43 @@ def candidate_to_hypothesis_md(
 
     out_path.write_text("\n".join(fm_lines + body_lines).strip() + "\n")
     return out_path
+
+
+def register_candidate(
+    candidate: Candidate,
+    *,
+    db_path: Path = DEFAULT_DB_PATH,
+    hypotheses_dir: Path = DEFAULT_HYPOTHESES_DIR,
+    actor: str = "agent:discover:unknown",
+    inbox_dir: Path | None = DEFAULT_INBOX,
+    archive_inbox: bool = True,
+) -> dict[str, Any]:
+    """Materialize one candidate into the canonical PROPOSED hypothesis state."""
+    from trading_lab.agent import lifecycle
+
+    md_path = candidate_to_hypothesis_md(candidate, hypotheses_dir)
+    lifecycle.add_hypothesis(
+        slug=candidate.slug,
+        state=lifecycle.State.PROPOSED.value,
+        source_url=candidate.source_url,
+        source_type=candidate.source_type,
+        summary=candidate.summary[:1000],
+        market_criteria=candidate.market_criteria,
+        actor=actor,
+        db_path=db_path,
+    )
+
+    archived_to = None
+    if archive_inbox and inbox_dir is not None:
+        src = inbox_dir / f"{candidate.slug}.md"
+        if src.exists():
+            archived_root = inbox_dir / ".archived" / datetime.now(tz=UTC).strftime("%Y-%m-%d")
+            archived_root.mkdir(parents=True, exist_ok=True)
+            archived_to = archived_root / src.name
+            shutil.move(str(src), str(archived_to))
+
+    return {
+        "slug": candidate.slug,
+        "hypothesis_path": str(md_path),
+        "archived_to": str(archived_to) if archived_to else None,
+    }

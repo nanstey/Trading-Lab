@@ -16,6 +16,9 @@ TRADING_LAB=/home/$USER/Code/Trading-Lab
 0 4 * * *  cd $TRADING_LAB && make sync-markets         >> logs/cron_sync.log  2>&1
 0 4 * * 0  cd $TRADING_LAB && make sync-markets-full    >> logs/cron_sync.log  2>&1
 
+# Every 6h: poll public strategy sources into manual_inbox.
+0 */6 * * *  cd $TRADING_LAB && make research-capture SOURCE_ARGS='--all' >> logs/cron_capture.log 2>&1
+
 # Daily: drain manual_inbox into PROPOSED (RSS opt-in via RSS=1).
 0 9 * * *  cd $TRADING_LAB && make research-discover    >> logs/cron_discover.log 2>&1
 

@@ -50,6 +50,9 @@ help:
 	@echo ""
 	@echo "Backtest / Strategy dev:"
 	@echo "  make backtest                                      Single-strategy backtest"
+	@echo "  make research-capture [SOURCE_ARGS='--all --dry-run']   Poll external sources into manual_inbox"
+	@echo "  make research-link-dropbox [SOURCE_ARGS='--dry-run']      Process dropped YouTube links"
+	@echo "  make drop-youtube-link URL='https://youtu.be/...'         Add one YouTube URL to dropbox"
 	@echo "  make research-discover [RSS=1]                     Drain manual_inbox (+ RSS)"
 	@echo "  make research-test SLUG=<slug> START=YYYY-MM-DD END=YYYY-MM-DD"
 	@echo "  make research-optimize SLUG=<slug> START=... END=... [WORKERS=4]"
@@ -256,6 +259,19 @@ sync-markets-full: ## Sync ALL markets including closed/archived
 # ---------------------------------------------------------------------------
 # Research / agentic loop
 # ---------------------------------------------------------------------------
+
+.PHONY: research-capture
+research-capture: ## Poll external strategy sources into manual_inbox
+	$(PYTHON) $(SCRIPTS)/capture_strategy_ideas.py $(SOURCE_ARGS)
+
+.PHONY: research-link-dropbox
+research-link-dropbox: ## Process dropped YouTube links into manual_inbox
+	$(PYTHON) $(SCRIPTS)/process_link_dropbox.py $(SOURCE_ARGS)
+
+.PHONY: drop-youtube-link
+drop-youtube-link: ## Add one YouTube URL to research/link_dropbox
+	@if [ -z "$(URL)" ]; then echo "Usage: make drop-youtube-link URL=https://youtu.be/<id>"; exit 1; fi
+	$(PYTHON) $(SCRIPTS)/drop_youtube_link.py "$(URL)"
 
 .PHONY: research-discover
 research-discover: ## Drain manual_inbox + (optional) RSS feeds → PROPOSED
