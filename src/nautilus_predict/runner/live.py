@@ -22,10 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Any
 
-from nautilus_predict.config import TradingConfig, TradingMode
+from nautilus_predict.config import TradingConfig, live_trading_confirmed
 
 log = logging.getLogger(__name__)
 
@@ -73,16 +72,9 @@ class LiveRunner:
         # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         # CRITICAL SAFETY CHECK - DO NOT REMOVE OR WEAKEN
         # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        if config.trading_mode != TradingMode.LIVE:
-            raise LiveTradingNotEnabled(
-                f"LiveRunner requires TRADING_MODE=live, got: {config.trading_mode.value}. "
-                "Set TRADING_MODE=live in your .env to enable live trading."
-            )
-
-        # TradingConfig already validates LIVE_TRADING_CONFIRMED at construction,
-        # but we double-check here as an extra safety layer.
-        confirmed = os.environ.get("LIVE_TRADING_CONFIRMED", "").lower()
-        if confirmed != "true":
+        # Legacy runner — superseded by runner/live_v2.py. Pre-flight kept
+        # for backward compatibility with anyone still importing this.
+        if not live_trading_confirmed():
             raise LiveTradingNotEnabled(
                 "Live trading requires LIVE_TRADING_CONFIRMED=true in environment. "
                 "This is a safety guard to prevent accidental live trading.\n"
@@ -138,8 +130,7 @@ class LiveRunner:
         # FINAL SAFETY CHECK at run() entry point
         # This catches any code path that bypasses __init__
         # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        confirmed = os.environ.get("LIVE_TRADING_CONFIRMED", "").lower()
-        if confirmed != "true":
+        if not live_trading_confirmed():
             raise LiveTradingNotEnabled(
                 "LIVE_TRADING_CONFIRMED env var not set to 'true'. "
                 "Aborting live trading."

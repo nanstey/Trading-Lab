@@ -47,7 +47,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from nautilus_predict.config import TradingConfig, TradingMode
+from nautilus_predict.config import TradingConfig
 
 log = logging.getLogger(__name__)
 
@@ -109,9 +109,8 @@ class GenericPaperRunner:
         strategy_params: dict[str, Any] | None = None,
         duration_secs: int | None = None,
     ) -> None:
-        assert config.trading_mode == TradingMode.PAPER, (
-            f"GenericPaperRunner requires TRADING_MODE=paper, got {config.trading_mode}"
-        )
+        # Paper-vs-live is now per-strategy (hypothesis.state); see PaperRunnerV2.
+        # This legacy runner doesn't check anything system-wide.
         self._config = config
         self._slug = slug
         self._strategy_module = strategy_module

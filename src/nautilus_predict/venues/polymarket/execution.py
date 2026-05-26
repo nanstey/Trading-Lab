@@ -24,7 +24,6 @@ from nautilus_trader.model.events import (
     OrderSubmitted,
 )
 from nautilus_trader.model.identifiers import (
-    AccountId,
     ClientId,
     VenueOrderId,
 )

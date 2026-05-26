@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from nautilus_trader.model.data import OrderBookDeltas
     from nautilus_trader.model.events import OrderFilled, PositionChanged
 
-    from nautilus_predict.config import TradingConfig, TradingMode
+    from nautilus_predict.config import TradingConfig
     from nautilus_predict.risk.kill_switch import KillSwitch
 
 
@@ -55,24 +55,11 @@ class NautilusPredictStrategy(Strategy):
         """Return the system trading configuration."""
         return self._config
 
-    @property
-    def trading_mode(self) -> TradingMode:
-        """Return the current trading mode."""
-        return self._config.trading_mode
-
-    @property
-    def is_live_mode(self) -> bool:
-        """
-        Return True if running in live trading mode.
-
-        Use this guard before submitting real orders.
-        """
-        return self._config.is_live
-
-    @property
-    def is_paper_mode(self) -> bool:
-        """Return True if running in paper trading mode."""
-        return self._config.is_paper
+    # Paper-vs-live is per-strategy now (hypothesis state), not system-wide.
+    # The old `trading_mode` / `is_live_mode` / `is_paper_mode` properties
+    # were removed — strategies shouldn't make decisions based on mode
+    # anyway; that's the runner's job. If a strategy needs to know its
+    # lifecycle state, it should query the experiment DB via the slug.
 
     def _check_kill_switch(self) -> None:
         """

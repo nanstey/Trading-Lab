@@ -1,0 +1,23 @@
+# config/portfolio.yaml — risk envelope + (future) capital allocation.
+#
+# The risk envelope applies to EVERY strategy by default. When the
+# multi-strategy capital allocator lands, per-slug allocations will go
+# under `allocations:` below.
+
+risk:
+  # Maximum net USDC position per market (single token).
+  max_position_usdc: 100.0
+  # Maximum aggregate USDC exposure across all markets.
+  max_total_exposure_usdc: 1000.0
+  # Daily loss limit. MUST be negative.
+  # When realised PnL drops below this in a day, the kill switch trips
+  # and ALL paper/live runners halt on the next watcher tick.
+  daily_loss_limit_usdc: -200.0
+
+# Per-strategy capital allocations — TODO (multi-strategy allocator).
+# When implemented:
+#   allocations:
+#     <slug>: <usdc>     # capital ceiling vended to that strategy on start
+# Until then, each strategy thinks it owns `risk.max_position_usdc`
+# independently; with N PAPER strategies you're over-allocated Nx.
+allocations: {}

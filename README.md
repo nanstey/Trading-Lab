@@ -32,6 +32,23 @@ For a deep-dive on the architecture, see [docs/architecture.md](docs/architectur
 | `CrossVenueHedgeStrategy` | `strategies/cross_venue_hedge.py` | Scaffolded |
 | `CatalystTrader` | `strategies/catalyst_trader.py` | Scaffolded |
 
+## Configuration layout
+
+Non-secret config lives in `config/` (committed); secrets in `.env`
+(gitignored):
+
+| File | What |
+|---|---|
+| `.env` | Secrets only — wallet keys, derived L2 API creds, `LIVE_TRADING_CONFIRMED` gate |
+| `config/system.yaml` | Log level, watcher thresholds, heartbeat timeout, budget caps |
+| `config/venues.yaml` | Endpoint URLs + on-chain contract addresses (constants) |
+| `config/portfolio.yaml` | Risk envelope (`max_position_usdc`, etc.); future per-strategy allocations |
+
+Strategy params live in the hypothesis MD frontmatter + optimised
+winner row in `research/experiments.db` — not in any system config.
+Paper-vs-live is a per-strategy concern (hypothesis lifecycle state),
+not a system-wide env var.
+
 ## Fresh-machine setup
 
 See [docs/getting-started.md](docs/getting-started.md) for the full
@@ -47,7 +64,7 @@ make dev                                          # creates .venv + installs dep
 cp .env.example .env
 $EDITOR .env                                      # paste POLY_PRIVATE_KEY
 .venv/bin/python scripts/derive_polymarket_keys.py  # one-time L2 derivation
-make check-env                                    # 23/23 should pass
+make check-env                                    # all checks should pass
 
 # 3. Sync market metadata (~10s)
 make sync-markets
@@ -117,7 +134,7 @@ make research-status SLUG=tick-mean-revert # one slug + history + experiments
   scripts/halt_trading.py --reason "..."     # trip
   scripts/reset_kill_switch.py --confirm     # clear
   ```
-- **Live trading triple-gate:** requires `TRADING_MODE=live` AND `LIVE_TRADING_CONFIRMED=true` AND hypothesis state=LIVE.
+- **Live trading double-gate:** requires `LIVE_TRADING_CONFIRMED=true` in `.env` (system gate) AND hypothesis state=LIVE (per-strategy gate).
 - **Auto-retirement watcher:** PAPER strategies → HALTED on single-day -5%; → RETIRED on 7d -15%.
 - **Heartbeat monitor:** trips the kill switch on connection timeout.
 - **Position limits:** per-market USDC caps via `RiskConfig`.

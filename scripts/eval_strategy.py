@@ -186,10 +186,10 @@ def main() -> int:
         except Exception:
             recorded_params = {}
     if not recorded_params:
-        recorded_params = {
-            "min_profit_usdc": cfg.arb.min_profit_usdc,
-            "max_capital_usdc": cfg.arb.max_capital_usdc,
-        }
+        # Fall back to a sentinel empty dict when we can't introspect the
+        # strategy's config — better than recording stale arb-specific keys
+        # that have no meaning for newer strategies.
+        recorded_params = {}
 
     exp_id = lifecycle.record_experiment(
         slug=args.slug,

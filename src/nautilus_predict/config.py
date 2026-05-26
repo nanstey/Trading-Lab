@@ -1,68 +1,58 @@
 """
 System-wide configuration for Nautilus-Predict.
 
-All settings are validated via Pydantic at startup. Secrets are read from
-environment variables (via .env file). Safe defaults prevent live trading
-without explicit opt-in.
+Three sources, merged at load time:
+
+  1. **`.env`** — SECRETS ONLY (gitignored): wallet private keys, derived
+     L2 API credentials, `LIVE_TRADING_CONFIRMED` security gate.
+  2. **`config/system.yaml`** — log level, watcher thresholds, heartbeat
+     timeout, budget caps. Tunable.
+  3. **`config/venues.yaml`** — endpoint URLs + on-chain contract addresses.
+     Constants; only change for testnet / chain migration.
+  4. **`config/portfolio.yaml`** — risk envelope + (future) per-strategy
+     capital allocations.
+
+Strategy params are NOT system config — they live in the hypothesis
+frontmatter (defaults from `*Config(StrategyConfig)` class) plus the
+optimised winner row in `research/experiments.db`. Paper-vs-live is NOT
+a system mode either — it's a per-strategy lifecycle state.
 
 Usage:
-    from nautilus_predict.config import TradingConfig, TradingMode
-    config = TradingConfig()
+    from nautilus_predict.config import load_config
+    cfg = load_config()
+    print(cfg.venues.polymarket.http_url)
+    print(cfg.risk.daily_loss_limit_usdc)
 """
 
 from __future__ import annotations
 
 import os
-from enum import StrEnum
-from typing import Literal
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+import yaml
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
-class TradingMode(StrEnum):
-    """Execution mode for the trading system."""
-
-    BACKTEST = "backtest"
-    PAPER = "paper"
-    LIVE = "live"
+# ---------------------------------------------------------------------------
+# Secrets (.env)
+# ---------------------------------------------------------------------------
 
 
-class PolymarketConfig(BaseSettings):
-    """Polymarket CLOB adapter configuration."""
+class PolymarketSecrets(BaseSettings):
+    """Polymarket credentials only — endpoints come from venues.yaml."""
 
     model_config = SettingsConfigDict(env_prefix="POLY_", extra="ignore")
 
-    # L1 credentials
-    private_key: SecretStr = Field(
-        default=SecretStr(""),
-        description="Ethereum/Polygon private key for L1 EIP-712 signing (hex, no 0x prefix)",
-    )
-
-    # L2 credentials (derived from L1 or pre-generated)
-    api_key: str = Field(default="", description="Polymarket L2 API key")
-    api_secret: SecretStr = Field(default=SecretStr(""), description="Polymarket L2 API secret")
-    api_passphrase: SecretStr = Field(
-        default=SecretStr(""), description="Polymarket L2 API passphrase"
-    )
-
-    # Endpoints
-    host: str = Field(default="https://clob.polymarket.com", description="Polymarket CLOB REST URL")
-    ws_host: str = Field(
-        default="wss://ws-subscriptions-clob.polymarket.com/ws/",
-        description="Polymarket WebSocket URL",
-    )
-
-    # Contract address (Polygon mainnet constant — safe to default)
-    exchange_address: str = Field(
-        default="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
-        description="Polymarket CLOB Exchange contract address on Polygon",
-    )
+    private_key: SecretStr = Field(default=SecretStr(""))
+    api_key: str = Field(default="")
+    api_secret: SecretStr = Field(default=SecretStr(""))
+    api_passphrase: SecretStr = Field(default=SecretStr(""))
 
     @field_validator("private_key", mode="before")
     @classmethod
     def strip_0x_prefix(cls, v: str | SecretStr) -> str:
-        """Normalize private key by stripping 0x prefix if present."""
         raw = v.get_secret_value() if isinstance(v, SecretStr) else v
         if raw.startswith("0x") or raw.startswith("0X"):
             return raw[2:]
@@ -70,39 +60,26 @@ class PolymarketConfig(BaseSettings):
 
     @property
     def has_l1_credentials(self) -> bool:
-        """Return True if L1 private key is configured."""
         return bool(self.private_key.get_secret_value())
 
     @property
     def has_l2_credentials(self) -> bool:
-        """Return True if L2 API credentials are configured."""
         return bool(self.api_key and self.api_secret.get_secret_value())
 
 
-class HyperliquidConfig(BaseSettings):
-    """Hyperliquid adapter configuration."""
+class HyperliquidSecrets(BaseSettings):
+    """Hyperliquid credentials only — endpoints come from venues.yaml."""
 
     model_config = SettingsConfigDict(env_prefix="HL_", extra="ignore")
 
-    private_key: SecretStr = Field(
-        default=SecretStr(""),
-        description="Hyperliquid wallet private key for signing orders",
-    )
-    api_url: str = Field(
-        default="https://api.hyperliquid.xyz", description="Hyperliquid REST API URL"
-    )
-    ws_url: str = Field(
-        default="wss://api.hyperliquid.xyz/ws", description="Hyperliquid WebSocket URL"
-    )
-    account_address: str = Field(
-        default="",
-        description="EVM wallet address (leave blank to derive from private_key)",
-    )
+    private_key: SecretStr = Field(default=SecretStr(""))
+    # Wallet address derived from private key; not a secret but lives with
+    # the credentials since it's user-specific. Leave blank to derive.
+    account_address: str = Field(default="")
 
     @field_validator("private_key", mode="before")
     @classmethod
     def strip_0x_prefix(cls, v: str | SecretStr) -> str:
-        """Normalize private key by stripping 0x prefix if present."""
         raw = v.get_secret_value() if isinstance(v, SecretStr) else v
         if raw.startswith("0x") or raw.startswith("0X"):
             return raw[2:]
@@ -110,149 +87,299 @@ class HyperliquidConfig(BaseSettings):
 
     @property
     def has_credentials(self) -> bool:
-        """Return True if Hyperliquid credentials are configured."""
         return bool(self.private_key.get_secret_value())
 
 
-class RiskConfig(BaseSettings):
-    """Risk management configuration."""
-
-    model_config = SettingsConfigDict(extra="ignore")
-
-    max_position_usdc: float = Field(
-        default=100.0,
-        gt=0,
-        description="Maximum position size in USDC per market",
-        alias="MAX_POSITION_USDC",
-    )
-    max_total_exposure_usdc: float = Field(
-        default=1000.0,
-        gt=0,
-        description="Maximum total portfolio exposure in USDC",
-        alias="MAX_TOTAL_EXPOSURE_USDC",
-    )
-    daily_loss_limit_usdc: float = Field(
-        default=-200.0,
-        lt=0,
-        description="Kill switch triggers if daily PnL drops below this threshold (must be negative)",
-        alias="DAILY_LOSS_LIMIT_USDC",
-    )
-    heartbeat_timeout_secs: int = Field(
-        default=10,
-        gt=0,
-        description="Heartbeat timeout in seconds before canceling all orders",
-        alias="HEARTBEAT_TIMEOUT_SECS",
-    )
-
-    model_config = SettingsConfigDict(populate_by_name=True, extra="ignore")
+# ---------------------------------------------------------------------------
+# YAML-backed sections (committed config/ files)
+# ---------------------------------------------------------------------------
 
 
-class MarketMakerConfig(BaseSettings):
-    """Market maker strategy parameters."""
-
-    model_config = SettingsConfigDict(env_prefix="MM_", extra="ignore")
-
-    spread_bps: float = Field(default=50.0, ge=1.0, description="Bid-ask spread to quote in basis points")
-    order_size_usdc: float = Field(default=10.0, ge=1.0, description="Per-side order size in USDC")
-    max_position_usdc: float = Field(default=500.0, ge=1.0, description="Max net position per market in USDC")
-
-
-class ArbConfig(BaseSettings):
-    """Binary complement arbitrage strategy parameters."""
-
-    model_config = SettingsConfigDict(env_prefix="ARB_", extra="ignore")
-
-    min_profit_usdc: float = Field(default=0.02, ge=0.0, description="Minimum profit per arb after fees (USDC)")
-    max_capital_usdc: float = Field(default=1000.0, ge=1.0, description="Maximum capital per arb opportunity (USDC)")
+@dataclass(frozen=True)
+class PolymarketVenue:
+    http_url: str
+    ws_market_url: str
+    ws_user_url: str
+    ctf_address: str
+    exchange_address: str
 
 
-class HedgeConfig(BaseSettings):
-    """Cross-venue hedge strategy parameters (Polymarket → Hyperliquid)."""
-
-    model_config = SettingsConfigDict(env_prefix="HEDGE_", extra="ignore")
-
-    ratio: float = Field(default=0.5, ge=0.0, le=1.0, description="Fraction of Polymarket exposure to hedge (0.0–1.0)")
-    instrument: str = Field(default="BTC-USD", description="Hyperliquid instrument for hedging")
+@dataclass(frozen=True)
+class HyperliquidVenue:
+    api_url: str
+    ws_url: str
 
 
-class TradingConfig(BaseSettings):
+@dataclass(frozen=True)
+class PolygonVenue:
+    rpc_url: str
+
+
+@dataclass(frozen=True)
+class VenuesConfig:
+    polymarket: PolymarketVenue
+    hyperliquid: HyperliquidVenue
+    polygon: PolygonVenue
+
+
+@dataclass(frozen=True)
+class WatcherConfig:
+    initial_capital_usdc: float
+    single_day_limit_pct: float
+    rolling_dd_limit_pct: float
+    rolling_window_days: int
+
+
+@dataclass(frozen=True)
+class BudgetConfig:
+    llm_tokens_per_day: int
+    backtests_per_day: int
+    paper_starts_per_week: int
+    live_starts_per_day: int
+
+
+@dataclass(frozen=True)
+class SystemConfig:
+    log_level: str
+    heartbeat_timeout_secs: int
+    watcher: WatcherConfig
+    budget: BudgetConfig
+
+
+@dataclass(frozen=True)
+class RiskConfig:
+    max_position_usdc: float
+    max_total_exposure_usdc: float
+    daily_loss_limit_usdc: float
+
+
+@dataclass(frozen=True)
+class PortfolioConfig:
+    risk: RiskConfig
+    # Per-strategy capital ceilings, vended on start by the (TODO) allocator.
+    allocations: dict[str, float] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Top-level merged config
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TradingConfig:
     """
-    Top-level configuration for Nautilus-Predict.
+    Merged top-level config. Constructed by `load_config()`.
 
-    Reads from environment variables and .env file. Safe defaults
-    prevent live trading without explicit opt-in.
-
-    Safe default: TRADING_MODE=paper (never live without explicit config).
+    Mutability note: this dataclass is intentionally not frozen so a few
+    legacy code paths (e.g. backtest.py with --min-profit-usdc CLI flag)
+    can still tweak fields in-place during a single process invocation.
+    Don't mutate from production code; tweaks should go through the
+    proper sources (YAML files or hypothesis MD).
     """
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-        populate_by_name=True,
-    )
+    # Secrets (from .env)
+    polymarket_secrets: PolymarketSecrets
+    hyperliquid_secrets: HyperliquidSecrets
 
-    trading_mode: TradingMode = Field(
-        default=TradingMode.PAPER,
-        description="Execution mode: backtest | paper | live",
-        alias="TRADING_MODE",
-    )
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
-        default="INFO",
-        description="Logging verbosity",
-        alias="LOG_LEVEL",
-    )
+    # YAML sections
+    system: SystemConfig
+    venues: VenuesConfig
+    portfolio: PortfolioConfig
 
-    # Nested configs loaded from their own env prefixes
-    polymarket: PolymarketConfig = Field(default_factory=PolymarketConfig)
-    hyperliquid: HyperliquidConfig = Field(default_factory=HyperliquidConfig)
-    risk: RiskConfig = Field(default_factory=RiskConfig)
-    market_maker: MarketMakerConfig = Field(default_factory=MarketMakerConfig)
-    arb: ArbConfig = Field(default_factory=ArbConfig)
-    hedge: HedgeConfig = Field(default_factory=HedgeConfig)
-
-    @model_validator(mode="after")
-    def validate_live_mode_requirements(self) -> TradingConfig:
-        """
-        Enforce double opt-in for live trading.
-
-        Live mode requires BOTH:
-          - TRADING_MODE=live
-          - LIVE_TRADING_CONFIRMED=true
-
-        This prevents accidentally starting live trading.
-        """
-        if self.trading_mode == TradingMode.LIVE:
-            confirmed = os.environ.get("LIVE_TRADING_CONFIRMED", "").lower()
-            if confirmed != "true":
-                raise ValueError(
-                    "Live trading requires LIVE_TRADING_CONFIRMED=true in environment. "
-                    "Set this explicitly to confirm you intend to trade with real funds."
-                )
-        return self
+    # ----------- Backward-compatible accessors -----------
+    # These shadow the old TradingConfig field names so existing call
+    # sites keep working during the transition. Prefer the new paths
+    # (cfg.venues.polymarket.http_url, cfg.portfolio.risk.daily_loss_limit_usdc).
 
     @property
-    def is_live(self) -> bool:
-        """Return True if running in live trading mode."""
-        return self.trading_mode == TradingMode.LIVE
+    def polymarket(self) -> _PolymarketCompat:
+        return _PolymarketCompat(self.polymarket_secrets, self.venues.polymarket)
 
     @property
-    def is_paper(self) -> bool:
-        """Return True if running in paper trading mode."""
-        return self.trading_mode == TradingMode.PAPER
+    def hyperliquid(self) -> _HyperliquidCompat:
+        return _HyperliquidCompat(self.hyperliquid_secrets, self.venues.hyperliquid)
 
     @property
-    def is_backtest(self) -> bool:
-        """Return True if running in backtest mode."""
-        return self.trading_mode == TradingMode.BACKTEST
+    def risk(self) -> _RiskCompat:
+        return _RiskCompat(self.portfolio.risk, self.system.heartbeat_timeout_secs)
+
+    @property
+    def log_level(self) -> str:
+        return self.system.log_level
+
+    # `is_live` / `is_paper` are now PER-STRATEGY concerns (hypothesis state),
+    # NOT system state. Removed from the new config.
 
 
-SystemConfig = TradingConfig
+# ---------------------------------------------------------------------------
+# Backward-compatibility shims — only used by legacy code during transition.
+# ---------------------------------------------------------------------------
+
+
+class _PolymarketCompat:
+    """Lets `cfg.polymarket.host` etc. keep working for older callers."""
+
+    def __init__(self, secrets: PolymarketSecrets, venue: PolymarketVenue) -> None:
+        self._secrets = secrets
+        self._venue = venue
+
+    @property
+    def private_key(self) -> SecretStr:
+        return self._secrets.private_key
+
+    @property
+    def api_key(self) -> str:
+        return self._secrets.api_key
+
+    @property
+    def api_secret(self) -> SecretStr:
+        return self._secrets.api_secret
+
+    @property
+    def api_passphrase(self) -> SecretStr:
+        return self._secrets.api_passphrase
+
+    @property
+    def has_l1_credentials(self) -> bool:
+        return self._secrets.has_l1_credentials
+
+    @property
+    def has_l2_credentials(self) -> bool:
+        return self._secrets.has_l2_credentials
+
+    @property
+    def host(self) -> str:
+        return self._venue.http_url
+
+    @property
+    def ws_host(self) -> str:
+        # Legacy: callers expected one ws URL. Default to market channel.
+        return self._venue.ws_market_url
+
+    @property
+    def ws_market_url(self) -> str:
+        return self._venue.ws_market_url
+
+    @property
+    def ws_user_url(self) -> str:
+        return self._venue.ws_user_url
+
+    @property
+    def exchange_address(self) -> str:
+        return self._venue.exchange_address
+
+
+class _HyperliquidCompat:
+    def __init__(self, secrets: HyperliquidSecrets, venue: HyperliquidVenue) -> None:
+        self._secrets = secrets
+        self._venue = venue
+
+    @property
+    def private_key(self) -> SecretStr:
+        return self._secrets.private_key
+
+    @property
+    def account_address(self) -> str:
+        return self._secrets.account_address
+
+    @property
+    def api_url(self) -> str:
+        return self._venue.api_url
+
+    @property
+    def ws_url(self) -> str:
+        return self._venue.ws_url
+
+    @property
+    def has_credentials(self) -> bool:
+        return self._secrets.has_credentials
+
+
+class _RiskCompat:
+    def __init__(self, risk: RiskConfig, heartbeat_timeout_secs: int) -> None:
+        self._risk = risk
+        self._heartbeat = heartbeat_timeout_secs
+
+    @property
+    def max_position_usdc(self) -> float:
+        return self._risk.max_position_usdc
+
+    @property
+    def max_total_exposure_usdc(self) -> float:
+        return self._risk.max_total_exposure_usdc
+
+    @property
+    def daily_loss_limit_usdc(self) -> float:
+        return self._risk.daily_loss_limit_usdc
+
+    @property
+    def heartbeat_timeout_secs(self) -> int:
+        return self._heartbeat
+
+
+# ---------------------------------------------------------------------------
+# Loader
+# ---------------------------------------------------------------------------
+
+
+CONFIG_DIR = Path("config")
+
+
+def _load_yaml(name: str) -> dict[str, Any]:
+    path = CONFIG_DIR / name
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing config file: {path}. See config/*.example files (if "
+            f"present) or run `cp config.example/* config/` to seed defaults."
+        )
+    with path.open() as f:
+        return yaml.safe_load(f) or {}
 
 
 def load_config() -> TradingConfig:
-    """Load and validate full system configuration from environment."""
+    """Load + validate full system configuration."""
     from dotenv import load_dotenv
 
     load_dotenv()
-    return TradingConfig()
+
+    polymarket_secrets = PolymarketSecrets()
+    hyperliquid_secrets = HyperliquidSecrets()
+
+    sys_yaml = _load_yaml("system.yaml")
+    venues_yaml = _load_yaml("venues.yaml")
+    portfolio_yaml = _load_yaml("portfolio.yaml")
+
+    system = SystemConfig(
+        log_level=sys_yaml.get("log_level", "INFO"),
+        heartbeat_timeout_secs=int(sys_yaml.get("heartbeat_timeout_secs", 10)),
+        watcher=WatcherConfig(**sys_yaml.get("watcher", {})),
+        budget=BudgetConfig(**sys_yaml.get("budget", {})),
+    )
+
+    venues = VenuesConfig(
+        polymarket=PolymarketVenue(**venues_yaml.get("polymarket", {})),
+        hyperliquid=HyperliquidVenue(**venues_yaml.get("hyperliquid", {})),
+        polygon=PolygonVenue(**venues_yaml.get("polygon", {})),
+    )
+
+    portfolio = PortfolioConfig(
+        risk=RiskConfig(**portfolio_yaml.get("risk", {})),
+        allocations=portfolio_yaml.get("allocations", {}) or {},
+    )
+
+    return TradingConfig(
+        polymarket_secrets=polymarket_secrets,
+        hyperliquid_secrets=hyperliquid_secrets,
+        system=system,
+        venues=venues,
+        portfolio=portfolio,
+    )
+
+
+def live_trading_confirmed() -> bool:
+    """Read the per-process LIVE_TRADING_CONFIRMED gate from env.
+
+    Kept as an env var (not yaml) so it's harder to commit by accident
+    and so the operator can flip it without editing a file.
+    """
+    return os.environ.get("LIVE_TRADING_CONFIRMED", "").lower() == "true"

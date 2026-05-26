@@ -1,0 +1,25 @@
+# config/venues.yaml — venue endpoints + on-chain contract addresses.
+# These are PUBLIC constants — change only if migrating to testnet or a
+# different chain. NO keys or credentials here (those live in `.env`).
+
+polymarket:
+  # REST API base URL.
+  http_url: https://clob.polymarket.com
+  # Market data WebSocket (book + price_change events; public, no auth).
+  ws_market_url: wss://ws-subscriptions-clob.polymarket.com/ws/market
+  # User-channel WebSocket (order/fill events; requires L2 auth at handshake).
+  ws_user_url: wss://ws-subscriptions-clob.polymarket.com/ws/user
+  # Conditional Tokens Framework contract on Polygon mainnet.
+  ctf_address: 0x4D97DCd97eC945f40cF65F87097ACe5EA0476045
+  # CLOB Exchange contract (used in EIP-712 order signing domain).
+  exchange_address: 0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E
+
+hyperliquid:
+  api_url: https://api.hyperliquid.xyz
+  ws_url: wss://api.hyperliquid.xyz/ws
+
+polygon:
+  # Used for on-chain settlement verification + L1 EIP-712 nonce checks.
+  # Public RPC default; swap to a private one (Alchemy/Infura) for higher
+  # rate limits.
+  rpc_url: https://polygon-rpc.com

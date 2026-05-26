@@ -22,13 +22,12 @@ from __future__ import annotations
 
 import importlib
 import logging
-import os
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from nautilus_predict.config import TradingConfig, TradingMode
+from nautilus_predict.config import TradingConfig, live_trading_confirmed
 
 log = logging.getLogger(__name__)
 
@@ -69,17 +68,14 @@ class LiveRunner:
         strategy_params: dict[str, Any] | None = None,
         duration_secs: int | None = None,
     ) -> None:
-        # ---------- Pre-flight: live mode ----------
-        if config.trading_mode != TradingMode.LIVE:
-            raise LiveTradingNotEnabled(
-                f"LiveRunner requires TRADING_MODE=live, got "
-                f"{config.trading_mode.value}. Set TRADING_MODE=live in .env."
-            )
-        if os.environ.get("LIVE_TRADING_CONFIRMED", "").lower() != "true":
+        # ---------- Pre-flight: live security gate ----------
+        # Paper-vs-live is per-strategy (hypothesis.state); the system-wide
+        # gate is just `LIVE_TRADING_CONFIRMED=true` in .env, which protects
+        # against accidental live runs even if someone passes the right slug.
+        if not live_trading_confirmed():
             raise LiveTradingNotEnabled(
                 "LIVE_TRADING_CONFIRMED env var not set to 'true'. "
-                "This is the second of TWO required opt-ins for live trading. "
-                "Set it explicitly to confirm intent to trade real funds."
+                "Set it explicitly in .env to confirm intent to trade real funds."
             )
         if not config.polymarket.has_l1_credentials:
             raise LiveTradingNotEnabled(
@@ -124,7 +120,7 @@ class LiveRunner:
     def run(self) -> LiveRunSummary:
         # Final safety check at run-entry (catches any code path that
         # bypassed __init__).
-        if os.environ.get("LIVE_TRADING_CONFIRMED", "").lower() != "true":
+        if not live_trading_confirmed():
             raise LiveTradingNotEnabled(
                 "LIVE_TRADING_CONFIRMED was cleared between __init__ and run() — aborting."
             )

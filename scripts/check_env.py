@@ -247,54 +247,51 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
     ]:
         report.add(check_package_installed(pkg, import_name))
 
-    # Trading mode
-    report.add(
-        CheckResult(
-            name="TRADING_MODE",
-            passed=True,
-            value=os.environ.get("TRADING_MODE", "paper (default)"),
-        )
-    )
+    # Config files (YAML — committed to git)
+    for yaml_name in ("system.yaml", "venues.yaml", "portfolio.yaml"):
+        path = Path("config") / yaml_name
+        report.add(CheckResult(
+            name=f"config/{yaml_name}",
+            passed=path.exists(),
+            value="present" if path.exists() else "MISSING",
+        ))
 
-    # Polymarket credentials
+    # Polymarket credentials (secrets only — endpoints come from venues.yaml)
     report.add(check_env_var("POLY_PRIVATE_KEY", required=False, sensitive=True))
     report.add(check_env_var("POLY_API_KEY", required=False, sensitive=True))
     report.add(check_env_var("POLY_API_SECRET", required=False, sensitive=True))
     report.add(check_env_var("POLY_API_PASSPHRASE", required=False, sensitive=True))
 
-    poly_host = os.environ.get("POLY_HOST", "https://clob.polymarket.com")
-    report.add(
-        CheckResult(name="POLY_HOST", passed=True, value=poly_host)
-    )
+    # Surface the venue endpoint we'll actually use (read from venues.yaml).
+    try:
+        from nautilus_predict.config import load_config
+        _cfg = load_config()
+        report.add(CheckResult(
+            name="venues.polymarket.http_url",
+            passed=True, value=_cfg.venues.polymarket.http_url,
+        ))
+        report.add(CheckResult(
+            name="venues.hyperliquid.api_url",
+            passed=True, value=_cfg.venues.hyperliquid.api_url,
+        ))
+        report.add(CheckResult(
+            name="portfolio.risk.daily_loss_limit_usdc",
+            passed=_cfg.portfolio.risk.daily_loss_limit_usdc < 0,
+            value=str(_cfg.portfolio.risk.daily_loss_limit_usdc),
+        ))
+    except Exception as exc:
+        report.add(CheckResult(name="config load", passed=False, value=f"FAILED: {exc}"))
 
     # Hyperliquid credentials
     report.add(check_env_var("HL_PRIVATE_KEY", required=False, sensitive=True))
-    hl_url = os.environ.get("HL_API_URL", "https://api.hyperliquid.xyz")
-    report.add(CheckResult(name="HL_API_URL", passed=True, value=hl_url))
-
-    # Risk config
-    report.add(
-        CheckResult(
-            name="MAX_POSITION_USDC",
-            passed=True,
-            value=os.environ.get("MAX_POSITION_USDC", "100.0 (default)"),
-        )
-    )
-    report.add(
-        CheckResult(
-            name="DAILY_LOSS_LIMIT_USDC",
-            passed=True,
-            value=os.environ.get("DAILY_LOSS_LIMIT_USDC", "-200.0 (default)"),
-        )
-    )
 
     # Data directory
     report.add(check_data_directory(Path("./data")))
 
-    # Live trading safety check
-    trading_mode = os.environ.get("TRADING_MODE", "paper")
+    # Live trading safety check — gate is now `LIVE_TRADING_CONFIRMED`
+    # alone (paper-vs-live is per-strategy via hypothesis state).
     live_confirmed = os.environ.get("LIVE_TRADING_CONFIRMED", "")
-    if trading_mode == "live":
+    if live_confirmed.lower() == "true":
         report.add(
             CheckResult(
                 name="LIVE_TRADING_CONFIRMED",
@@ -315,6 +312,12 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
     # Connectivity checks
     if not args.no_connectivity:
         print("Checking API connectivity...")
+        # Read endpoints from venues.yaml via load_config — see the config
+        # block above.
+        poly_host = _cfg.venues.polymarket.http_url if "_cfg" in dir() else \
+            "https://clob.polymarket.com"
+        hl_url = _cfg.venues.hyperliquid.api_url if "_cfg" in dir() else \
+            "https://api.hyperliquid.xyz"
         report.add(await check_polymarket_connectivity(poly_host))
         report.add(await check_hyperliquid_connectivity(hl_url))
     else:

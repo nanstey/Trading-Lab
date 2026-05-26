@@ -25,7 +25,6 @@ from nautilus_predict.venues.polymarket.client import PolymarketRestClient, Poly
 from nautilus_predict.venues.polymarket.data import PolymarketDataClient
 from nautilus_predict.venues.polymarket.execution import PolymarketExecutionClient
 
-
 _PM_WS_MARKET = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 _PM_WS_USER = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 

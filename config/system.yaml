@@ -1,0 +1,33 @@
+# config/system.yaml — system-wide tunables that don't change often.
+# Committed to git. NEVER put secrets here.
+#
+# Loaded by `nautilus_predict.config.load_config()` and merged with
+# `.env` (secrets) + `config/venues.yaml` + `config/portfolio.yaml`.
+
+# Logging verbosity. DEBUG / INFO / WARNING / ERROR.
+log_level: INFO
+
+# Heartbeat watcher — trips kill switch if no venue heartbeat within N seconds.
+heartbeat_timeout_secs: 10
+
+# Auto-retirement watcher thresholds (scripts/paper_watcher.py).
+# These apply to ALL PAPER strategies; per-strategy overrides not yet supported.
+watcher:
+  # Reference capital used to compute the % thresholds below.
+  initial_capital_usdc: 10000
+  # PAPER -> HALTED if a single day's realised PnL drops below
+  # -(initial_capital * single_day_limit_pct / 100).
+  single_day_limit_pct: 5
+  # PAPER -> RETIRED if cumulative PnL over the rolling window drops
+  # below -(initial_capital * rolling_dd_limit_pct / 100).
+  rolling_dd_limit_pct: 15
+  rolling_window_days: 7
+
+# Daily budget for the agentic research loop (eval/optimize backtests,
+# discovery passes, etc.). Hard caps; tooling exits early with
+# {"error": "budget_exhausted"} once a counter is at its cap.
+budget:
+  llm_tokens_per_day: 100000
+  backtests_per_day: 50
+  paper_starts_per_week: 1
+  live_starts_per_day: 0  # always human-only

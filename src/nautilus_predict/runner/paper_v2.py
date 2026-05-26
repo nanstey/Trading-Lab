@@ -44,7 +44,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from nautilus_predict.config import TradingConfig, TradingMode
+from nautilus_predict.config import TradingConfig
 
 log = logging.getLogger(__name__)
 
@@ -87,9 +87,10 @@ class PaperRunnerV2:
         strategy_params: dict[str, Any] | None = None,
         duration_secs: int | None = None,
     ) -> None:
-        assert config.trading_mode == TradingMode.PAPER, (
-            f"PaperRunnerV2 requires TRADING_MODE=paper, got {config.trading_mode}"
-        )
+        # Paper-vs-live is per-strategy (hypothesis.state), not system-wide.
+        # The runner key is `is_paper=True` on the exec config below — that's
+        # what makes this "paper". Caller is responsible for matching with
+        # hypothesis state (paper_run_v2.py enforces that).
         self._config = config
         self._slug = slug
         self._strategy_module = strategy_module

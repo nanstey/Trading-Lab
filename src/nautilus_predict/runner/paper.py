@@ -40,7 +40,7 @@ from typing import Any
 
 import aiohttp
 
-from nautilus_predict.config import TradingConfig, TradingMode
+from nautilus_predict.config import TradingConfig
 
 log = logging.getLogger(__name__)
 
@@ -124,9 +124,8 @@ class PaperRunner:
         duration_secs: int | None = None,
         debounce_secs: float = 30.0,
     ) -> None:
-        assert config.trading_mode == TradingMode.PAPER, (
-            f"PaperRunner requires TRADING_MODE=paper, got {config.trading_mode.value}"
-        )
+        # Paper-vs-live is now per-strategy (hypothesis.state); see PaperRunnerV2.
+        # This legacy runner doesn't check anything system-wide.
         self._config = config
         self._pairs: dict[str, PaperPair] = {
             cid: PaperPair(condition_id=cid, yes_token_id=yes, no_token_id=no)

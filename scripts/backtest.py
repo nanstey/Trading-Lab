@@ -66,10 +66,16 @@ def main() -> int:
     from nautilus_predict.runner.backtest import BacktestRunner, BacktestRunResult
 
     cfg = load_config()
-    if args.min_profit_usdc is not None:
-        cfg.arb.min_profit_usdc = args.min_profit_usdc
-    if args.max_capital_usdc is not None:
-        cfg.arb.max_capital_usdc = args.max_capital_usdc
+    # CLI overrides used to mutate cfg.arb in-place. That field is gone now
+    # (strategy params live in the hypothesis MD + DB, not system config).
+    # Translate the legacy flags into env vars BacktestRunner forwards.
+    if args.min_profit_usdc is not None or args.max_capital_usdc is not None:
+        params: dict = json.loads(os.environ.get("NP_STRATEGY_PARAMS_JSON") or "{}")
+        if args.min_profit_usdc is not None:
+            params["min_profit_usdc"] = args.min_profit_usdc
+        if args.max_capital_usdc is not None:
+            params["max_capital_usdc"] = args.max_capital_usdc
+        os.environ["NP_STRATEGY_PARAMS_JSON"] = json.dumps(params)
 
     start = datetime.fromisoformat(args.start).replace(tzinfo=UTC)
     end = datetime.fromisoformat(args.end).replace(tzinfo=UTC)

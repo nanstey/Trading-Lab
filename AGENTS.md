@@ -32,9 +32,13 @@ external agent runtime can drive a runbook. No `anthropic` SDK dependency.
 ### Configuration & node
 | Module | Purpose |
 |--------|---------|
-| `src/nautilus_predict/config.py` | Single source of truth. Always load via `load_config()`. Classes: `TradingConfig`, `PolymarketConfig`, `HyperliquidConfig`, `RiskConfig`, `MarketMakerConfig`, `ArbConfig`. |
-| `src/nautilus_predict/node.py` | Builds a `TradingNode` for live mode (currently — paper mode uses the lightweight `PaperRunner` instead). |
-| `src/nautilus_predict/main.py` | `--mode {paper,backtest,live}` entry. Paper selects pairs via the arb-complement hypothesis. |
+| `src/nautilus_predict/config.py` | Single source of truth. Loads `.env` (secrets) + `config/system.yaml` + `config/venues.yaml` + `config/portfolio.yaml`. Use `load_config()`. New paths: `cfg.venues.polymarket.http_url`, `cfg.portfolio.risk.daily_loss_limit_usdc`, `cfg.system.watcher.single_day_limit_pct`. Legacy compat properties (`cfg.polymarket.host`, `cfg.risk.daily_loss_limit_usdc`) preserved. **No `trading_mode` / `TRADING_MODE`** — paper-vs-live is per-strategy via hypothesis state. |
+| `config/system.yaml` | Log level, watcher thresholds, heartbeat timeout, budget caps. Committed. |
+| `config/venues.yaml` | Polymarket + Hyperliquid + Polygon endpoints + contract addresses. Constants. |
+| `config/portfolio.yaml` | Risk envelope + (future) per-strategy capital allocations. |
+| `.env` | **Secrets only**. `POLY_PRIVATE_KEY`, `POLY_API_KEY/SECRET/PASSPHRASE`, `HL_PRIVATE_KEY/ACCOUNT_ADDRESS`, `LIVE_TRADING_CONFIRMED`. Gitignored. |
+| `src/nautilus_predict/node.py` | Legacy `build_node(is_paper)` factory. Superseded — modern runners build their own TradingNode inline. |
+| `src/nautilus_predict/main.py` | Stub — prints pointers to `scripts/paper_run_v2.py` etc. The old `--mode paper/live` flag has no behaviour beyond informational. |
 
 ### Strategies (canonical)
 | Module | Purpose |
@@ -213,16 +217,28 @@ make sync-markets-full              # full sync (slower)
 
 ## Key Things to Know Before Editing
 
-### Config attribute names (authoritative)
-| Class | Attribute | Env var |
+### Config paths (authoritative)
+| Setting | New path | Lives in |
 |---|---|---|
-| `PolymarketConfig` | `host` | `POLY_HOST` |
-| `PolymarketConfig` | `ws_host` | `POLY_WS_HOST` |
-| `PolymarketConfig` | `exchange_address` | `POLY_EXCHANGE_ADDRESS` |
-| `HyperliquidConfig` | `api_url` | `HL_API_URL` |
-| `HyperliquidConfig` | `ws_url` | `HL_WS_URL` |
-| `ArbConfig` | `min_profit_usdc` | `ARB_MIN_PROFIT_USDC` |
-| `ArbConfig` | `max_capital_usdc` | `ARB_MAX_CAPITAL_USDC` |
+| Polymarket HTTP base | `cfg.venues.polymarket.http_url` | `config/venues.yaml` |
+| Polymarket market WS | `cfg.venues.polymarket.ws_market_url` | `config/venues.yaml` |
+| Polymarket user WS | `cfg.venues.polymarket.ws_user_url` | `config/venues.yaml` |
+| Polymarket exchange addr | `cfg.venues.polymarket.exchange_address` | `config/venues.yaml` |
+| Hyperliquid API | `cfg.venues.hyperliquid.api_url` | `config/venues.yaml` |
+| Polygon RPC | `cfg.venues.polygon.rpc_url` | `config/venues.yaml` |
+| Polymarket L1 key | `cfg.polymarket_secrets.private_key` | `.env` (`POLY_PRIVATE_KEY`) |
+| Polymarket L2 creds | `cfg.polymarket_secrets.api_key/secret/passphrase` | `.env` (`POLY_*`) |
+| Hyperliquid L1 key | `cfg.hyperliquid_secrets.private_key` | `.env` (`HL_PRIVATE_KEY`) |
+| Daily loss limit | `cfg.portfolio.risk.daily_loss_limit_usdc` | `config/portfolio.yaml` |
+| Max position USDC | `cfg.portfolio.risk.max_position_usdc` | `config/portfolio.yaml` |
+| Heartbeat timeout | `cfg.system.heartbeat_timeout_secs` | `config/system.yaml` |
+| Watcher thresholds | `cfg.system.watcher.*` | `config/system.yaml` |
+| Daily budget caps | `cfg.system.budget.*` | `config/system.yaml` |
+| Live opt-in gate | `live_trading_confirmed()` | `.env` (`LIVE_TRADING_CONFIRMED`) |
+
+**Strategy params** are NOT system config — they live in the hypothesis MD frontmatter (`*Config(StrategyConfig)` defaults) + optimised winner row in `research/experiments.db`. `paper_run_v2.py` / `live_run.py` pick the winner automatically.
+
+Legacy compat properties (`cfg.polymarket.host`, `cfg.risk.daily_loss_limit_usdc`) still work but are deprecated — prefer the new paths above.
 
 ### Strategy wiring (BinaryArbStrategy)
 - Config: `BinaryArbConfig` (frozen `StrategyConfig`). Knobs: `min_profit_usdc`, `max_capital_usdc`, `order_notional_usdc`, `allow_concurrent`, `taker_fee` (Polymarket is currently zero-fee on binary takers — default 0.0).

@@ -119,7 +119,7 @@ async def run(args: argparse.Namespace) -> int:
         if args.duration_secs:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=args.duration_secs)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
         else:
             await stop.wait()

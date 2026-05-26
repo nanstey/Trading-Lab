@@ -116,7 +116,6 @@ class PolymarketMarketMaker(NautilusPredictStrategy):
                 "token_id": self._token_id,
                 "spread_bps": self._params.spread_bps,
                 "order_size_usdc": self._params.order_size_usdc,
-                "mode": self.trading_mode.value,
             },
         )
         # TODO(live): Subscribe to order book channel for self._token_id

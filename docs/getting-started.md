@@ -48,9 +48,10 @@ Expected: `98 passed` (or more — test count grows over time).
 
 ---
 
-## 2. Credentials
+## 2. Credentials + config
 
-Copy the example env file and edit it:
+`.env` holds **secrets only** (gitignored). Non-secret config lives in
+`config/` and is checked into git.
 
 ```bash
 cp .env.example .env
@@ -60,18 +61,26 @@ $EDITOR .env
 **For PAPER trading only**, you need at minimum:
 
 ```
-TRADING_MODE=paper
 POLY_PRIVATE_KEY=0x<your wallet private key>
 ```
 
 L2 API credentials (`POLY_API_KEY/SECRET/PASSPHRASE`) can stay blank for
-backtest + paper modes — the data fetch + WS subscription paths use only
-public endpoints.
+backtest + paper — the data fetch + WS subscription paths use only public
+endpoints.
 
 **For LIVE trading**, all of the above PLUS:
-- `LIVE_TRADING_CONFIRMED=true` (the second of two opt-ins)
+- `LIVE_TRADING_CONFIRMED=true` (the system-level go/no-go gate)
 - L2 creds (derived below)
-- `MAX_POSITION_USDC` and `DAILY_LOSS_LIMIT_USDC` set conservatively
+- Edit `config/portfolio.yaml` to set `max_position_usdc` and
+  `daily_loss_limit_usdc` conservatively
+- The hypothesis must be in `LIVE` state (per-strategy gate)
+
+Inspect the active config:
+```bash
+cat config/system.yaml      # log level, watcher thresholds, budgets
+cat config/venues.yaml      # endpoints + contract addresses (rarely edit)
+cat config/portfolio.yaml   # risk envelope
+```
 
 ---
 
@@ -296,15 +305,14 @@ Three long-running processes:
 Pre-flight (no money risk — just checks):
 
 ```bash
-TRADING_MODE=live LIVE_TRADING_CONFIRMED=true make live-run SLUG=arb-complement
+LIVE_TRADING_CONFIRMED=true make live-run SLUG=arb-complement
 ```
 
 This dry-runs all the gates and prints what would happen. If everything
 passes, then to actually trade real money:
 
 ```bash
-TRADING_MODE=live LIVE_TRADING_CONFIRMED=true \
-    make live-run SLUG=arb-complement CONFIRM=1
+LIVE_TRADING_CONFIRMED=true make live-run SLUG=arb-complement CONFIRM=1
 ```
 
 The `CONFIRM=1` passes `--i-understand-this-is-live` to the script.
