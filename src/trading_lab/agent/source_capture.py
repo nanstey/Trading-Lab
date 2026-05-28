@@ -548,6 +548,25 @@ def _capture_items(
             candidate_to_inbox_md(candidate, inbox_dir)
             pending_urls.add(item.url)
             pending_written += 1
+
+            # Insert/refresh the ingestion queue row at CAPTURED/PENDING so the
+            # middle-pipeline crons (build_source_dossier etc.) have a queue.
+            try:
+                from trading_lab.agent import ingestion
+
+                folder_path = Path("research/hypotheses") / candidate.slug
+                ingestion.record_intake(
+                    source_url=candidate.source_url,
+                    source_type=candidate.source_type,
+                    source_title=candidate.title,
+                    capture_slug=candidate.slug,
+                    folder_path=str(folder_path),
+                    raw_capture_path=str(archive_path),
+                    actor="agent:capture",
+                    db_path=db_path,
+                )
+            except Exception as exc:  # pragma: no cover - non-fatal best-effort
+                errors.append({"source_url": item.url, "error": f"ingestion_intake_failed: {exc}"})
         except Exception as exc:  # pragma: no cover - exercised in integration use
             errors.append({"source_url": item.url, "error": str(exc)})
 

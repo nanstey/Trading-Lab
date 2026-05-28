@@ -50,10 +50,14 @@ help:
 	@echo ""
 	@echo "Backtest / Strategy dev:"
 	@echo "  make backtest                                      Single-strategy backtest"
-	@echo "  make research-capture [SOURCE_ARGS='--all --dry-run']   Poll external sources into manual_inbox"
-	@echo "  make research-link-dropbox [SOURCE_ARGS='--dry-run']      Process dropped YouTube links"
+	@echo "  make research-capture [SOURCE_ARGS='--all --dry-run']   Poll external sources, archive raw + enqueue ingestion row"
+	@echo "  make build-dossiers                                  Cron: render full-content dossier for the oldest CAPTURED/PENDING"
+	@echo "  make distill-ideas                                   Cron: scaffold memo for the oldest DOSSIER_READY/PENDING"
+	@echo "  make specify-hypotheses                              Cron: scaffold spec for the oldest MEMO_READY/PENDING"
+	@echo "  make ingestion-status                                List the upstream ingestion queue"
+	@echo "  make research-link-dropbox [SOURCE_ARGS='--dry-run']      DEPRECATED: link_dropbox is retired"
 	@echo "  make drop-youtube-link URL='https://youtu.be/...'         Add one YouTube URL to dropbox"
-	@echo "  make research-discover [RSS=1]                     Drain manual_inbox (+ RSS)"
+	@echo "  make research-discover                              Promote SPEC_READY/PENDING ingestion rows → PROPOSED"
 	@echo "  make research-test SLUG=<slug> START=YYYY-MM-DD END=YYYY-MM-DD"
 	@echo "  make research-optimize SLUG=<slug> START=... END=... [WORKERS=4]"
 	@echo "  make research-status [SLUG=<slug>]                 Lifecycle state inspector"
@@ -274,8 +278,33 @@ drop-youtube-link: ## Add one YouTube URL to research/link_dropbox
 	$(PYTHON) $(SCRIPTS)/drop_youtube_link.py "$(URL)"
 
 .PHONY: research-discover
-research-discover: ## Drain manual_inbox + (optional) RSS feeds → PROPOSED
-	$(PYTHON) $(SCRIPTS)/discover_strategies.py $(if $(RSS),--rss,)
+research-discover: ## Promote SPEC_READY/PENDING ingestion rows into PROPOSED
+	$(PYTHON) $(SCRIPTS)/discover_strategies.py
+
+.PHONY: ingestion-status
+ingestion-status: ## Inspect the upstream ingestion queue
+	$(PYTHON) $(SCRIPTS)/ingestion_status.py list
+
+.PHONY: build-dossiers
+build-dossiers: ## Build the next oldest CAPTURED/PENDING dossier (cron-friendly)
+	@SLUG=$$($(PYTHON) $(SCRIPTS)/ingestion_status.py next --stage CAPTURED | awk '{print $$3}'); \
+	if [ -n "$$SLUG" ] && [ "$$SLUG" != "[SILENT]" ]; then \
+	  $(PYTHON) $(SCRIPTS)/build_source_dossier.py --slug "$$SLUG"; \
+	else echo "[SILENT]"; fi
+
+.PHONY: distill-ideas
+distill-ideas: ## Scaffold the next oldest DOSSIER_READY/PENDING memo (cron-friendly)
+	@SLUG=$$($(PYTHON) $(SCRIPTS)/ingestion_status.py next --stage DOSSIER_READY | awk '{print $$3}'); \
+	if [ -n "$$SLUG" ] && [ "$$SLUG" != "[SILENT]" ]; then \
+	  $(PYTHON) $(SCRIPTS)/distill_source_material.py --slug "$$SLUG"; \
+	else echo "[SILENT]"; fi
+
+.PHONY: specify-hypotheses
+specify-hypotheses: ## Scaffold the next oldest MEMO_READY/PENDING spec (cron-friendly)
+	@SLUG=$$($(PYTHON) $(SCRIPTS)/ingestion_status.py next --stage MEMO_READY | awk '{print $$3}'); \
+	if [ -n "$$SLUG" ] && [ "$$SLUG" != "[SILENT]" ]; then \
+	  $(PYTHON) $(SCRIPTS)/write_hypothesis_spec.py --slug "$$SLUG"; \
+	else echo "[SILENT]"; fi
 
 .PHONY: research-test
 research-test: ## Evaluate one SLUG (eval_strategy.py)
