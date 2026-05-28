@@ -231,6 +231,38 @@ rss:
     assert second["duplicates"] == 1
 
 
+def test_scan_arxiv_sources_respects_enabled_flag(monkeypatch, tmp_path):
+    db_path = tmp_path / "experiments.db"
+    lifecycle.init_db(db_path)
+    calls: list[str] = []
+
+    def _fake_fetch(source):
+        calls.append(str(source.get("name") or ""))
+        return [
+            {
+                "title": "Useful market microstructure paper",
+                "link": "https://arxiv.org/abs/1234.5678",
+                "summary": "A paper about trading and liquidity.",
+                "published": "2026-05-25T00:00:00+00:00",
+            }
+        ]
+
+    monkeypatch.setattr(source_capture, "_fetch_arxiv_entries", _fake_fetch)
+
+    items = source_capture.scan_arxiv_sources(
+        [
+            {"name": "disabled-paper-feed", "category": "q-fin.TR", "enabled": False, "window_days": 14},
+            {"name": "enabled-paper-feed", "category": "q-fin.TR", "enabled": True, "window_days": 14},
+        ],
+        db_path=db_path,
+        now=datetime(2026, 5, 26, tzinfo=UTC),
+    )
+
+    assert calls == ["enabled-paper-feed"]
+    assert len(items) == 1
+    assert items[0].source_type == "arxiv:q-fin.TR"
+
+
 def test_capture_youtube_url_writes_inbox_and_archive(monkeypatch, tmp_path):
     db_path = tmp_path / "experiments.db"
     lifecycle.init_db(db_path)

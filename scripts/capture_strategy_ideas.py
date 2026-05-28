@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--sources", type=Path, default=Path("research/sources.yaml"))
+    p.add_argument("--sources", type=Path, default=Path("config/research.yaml"))
     p.add_argument("--inbox", type=Path, default=Path("research/manual_inbox"))
     p.add_argument("--captures-root", type=Path, default=Path("research/captures"))
     p.add_argument("--db", type=Path, default=Path("research/experiments.db"))

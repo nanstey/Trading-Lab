@@ -1,8 +1,9 @@
 # Source registry for automated strategy capture.
 #
 # `scripts/capture_strategy_ideas.py` reads this file, archives raw source
-# material under `research/captures/`, and writes normalized candidate markdown
-# into `research/manual_inbox/` for the existing discovery step.
+# material under `research/captures/`, mirrors a discovery-compatible inbox
+# artifact under `research/manual_inbox/`, and enqueues a CAPTURED/PENDING
+# row for the dossier -> memo -> spec middle pipeline.
 #
 # Principles:
 # - prefer no-secret public sources for v1
@@ -34,20 +35,21 @@ youtube:
   # Add more transcript-friendly channels here as they are vetted.
 
 arxiv:
+  # Temporarily disabled until we tighten the paper/whitepaper intake policy.
   - name: q-fin-trading
     category: q-fin.TR
     window_days: 14
     max_results: 10
-    enabled: true
+    enabled: false
   - name: q-fin-portfolio-management
     category: q-fin.PM
     window_days: 14
     max_results: 10
-    enabled: true
+    enabled: false
   - name: q-fin-statistics
     category: q-fin.ST
     window_days: 14
     max_results: 10
-    enabled: true
+    enabled: false
 
 manual_inbox: research/manual_inbox/

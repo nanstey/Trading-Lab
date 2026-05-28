@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 
 from trading_lab.agent.discovery import _sanitize, _slugify, already_seen
 
-DEFAULT_SOURCES = Path("research/sources.yaml")
+DEFAULT_SOURCES = Path("config/research.yaml")
 DEFAULT_INBOX = Path("research/manual_inbox")
 DEFAULT_CAPTURES_ROOT = Path("research/captures")
 DEFAULT_LINK_DROPBOX = Path("research/link_dropbox")

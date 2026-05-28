@@ -5,7 +5,7 @@ Sources (in priority order):
   1. `research/manual_inbox/*.md` — drag-and-drop new ideas here.
      Each file is one candidate. Frontmatter is optional; if absent the
      filename becomes the slug and the body becomes the summary.
-  2. `research/sources.yaml` — RSS feed list. Each new item becomes a
+  2. `config/research.yaml` — RSS feed list. Each new item becomes a
      candidate via `WebFetch` of its URL.
 
 Dedup:
@@ -42,7 +42,7 @@ from trading_lab.agent.lifecycle import DEFAULT_DB_PATH, SCHEMA
 log = logging.getLogger(__name__)
 
 DEFAULT_INBOX = Path("research/manual_inbox")
-DEFAULT_SOURCES = Path("research/sources.yaml")
+DEFAULT_SOURCES = Path("config/research.yaml")
 DEFAULT_HYPOTHESES_DIR = Path("research/hypotheses")
 
 

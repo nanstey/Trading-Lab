@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -c \"import sqlite3; c=sqlite3.connect\\('research/experiments.db'\\); [print\\(r[0]\\) for r in c.execute\\(\\\\\"SELECT sql FROM sqlite_master WHERE type IN \\('table','index'\\) ORDER BY name\\\\\"\\)]\")",
+      "Bash(.venv/bin/python -c \"from trading_lab.agent import lifecycle; lifecycle.init_db\\(\\)\")",
+      "Bash(.venv/bin/python -c \"import sqlite3; c=sqlite3.connect\\('research/experiments.db'\\); print\\('\\\\n'.join\\(sorted\\(r[0] for r in c.execute\\('SELECT name FROM sqlite_master WHERE type=\\\\\"table\\\\\"'\\)\\)\\)\\)\")",
+      "Bash(.venv/bin/python -c \"from trading_lab.agent import ingestion; print\\(list\\(ingestion.Stage\\), list\\(ingestion.Status\\)\\)\")",
+      "Bash(.venv/bin/python -m pytest tests/agent/test_ingestion.py -x -q)",
+      "Bash(.venv/bin/python -m pytest tests/agent/test_ingestion.py -x -q --no-cov)",
+      "Bash(.venv/bin/python -m pytest tests/agent/test_lifecycle.py tests/agent/test_discovery.py tests/agent/test_source_capture.py -x -q --no-cov)",
+      "Bash(.venv/bin/python -m pytest tests/agent/test_spec_validation.py -x -q --no-cov)",
+      "Bash(chmod +x /home/nautilus/code/Trading-Lab/scripts/migrate_research_layout.py)",
+      "Bash(.venv/bin/python scripts/migrate_research_layout.py)"
+    ]
+  }
+}

@@ -40,7 +40,7 @@ def main() -> int:
     )
     p.add_argument("--inbox", type=Path, default=Path("research/manual_inbox"))
     p.add_argument("--rss", action="store_true", help="(legacy) include RSS sources")
-    p.add_argument("--sources", type=Path, default=Path("research/sources.yaml"))
+    p.add_argument("--sources", type=Path, default=Path("config/research.yaml"))
     args = p.parse_args()
 
     from trading_lab.agent import discovery, ingestion
