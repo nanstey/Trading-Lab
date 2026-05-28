@@ -15,8 +15,14 @@ polymarket:
   exchange_address: 0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E
 
 hyperliquid:
-  api_url: https://api.hyperliquid.xyz
-  ws_url: wss://api.hyperliquid.xyz/ws
+  mainnet:
+    api_url: https://api.hyperliquid.xyz
+    ws_url: wss://api.hyperliquid.xyz/ws
+  testnet:
+    api_url: https://api.hyperliquid-testnet.xyz
+    ws_url: wss://api.hyperliquid-testnet.xyz/ws
+  # Active network for runners; `--testnet` on the CLI overrides to "testnet".
+  default_network: mainnet
 
 polygon:
   # Used for on-chain settlement verification + L1 EIP-712 nonce checks.

@@ -72,16 +72,18 @@ class PolymarketSecrets(BaseSettings):
 
 
 class HyperliquidSecrets(BaseSettings):
-    """Hyperliquid credentials only — endpoints come from venues.yaml."""
+    """Hyperliquid credentials — mainnet AND testnet wallets are independent."""
 
     model_config = SettingsConfigDict(env_prefix="HL_", extra="ignore")
 
+    # Mainnet API wallet (real USDC).
     private_key: SecretStr = Field(default=SecretStr(""))
-    # Wallet address derived from private key; not a secret but lives with
-    # the credentials since it's user-specific. Leave blank to derive.
     account_address: str = Field(default="")
+    # Testnet API wallet (faucet USDC). DISTINCT key from mainnet.
+    testnet_private_key: SecretStr = Field(default=SecretStr(""))
+    testnet_account_address: str = Field(default="")
 
-    @field_validator("private_key", mode="before")
+    @field_validator("private_key", "testnet_private_key", mode="before")
     @classmethod
     def strip_0x_prefix(cls, v: str | SecretStr) -> str:
         raw = v.get_secret_value() if isinstance(v, SecretStr) else v
@@ -92,6 +94,20 @@ class HyperliquidSecrets(BaseSettings):
     @property
     def has_credentials(self) -> bool:
         return bool(self.private_key.get_secret_value())
+
+    @property
+    def has_testnet_credentials(self) -> bool:
+        return bool(self.testnet_private_key.get_secret_value())
+
+    def network_private_key(self, network: str) -> str:
+        if network == "testnet":
+            return self.testnet_private_key.get_secret_value()
+        return self.private_key.get_secret_value()
+
+    def network_account_address(self, network: str) -> str:
+        if network == "testnet":
+            return self.testnet_account_address
+        return self.account_address
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +125,41 @@ class PolymarketVenue:
 
 
 @dataclass(frozen=True)
-class HyperliquidVenue:
+class HyperliquidNetwork:
+    """One endpoint set for either mainnet or testnet."""
+
     api_url: str
     ws_url: str
+
+
+@dataclass(frozen=True)
+class HyperliquidVenue:
+    """
+    Hyperliquid endpoints — one block per network plus a default.
+
+    Backward-compat: legacy `api_url` / `ws_url` properties resolve against
+    the default network so existing callers continue to work.
+    """
+
+    mainnet: HyperliquidNetwork
+    testnet: HyperliquidNetwork
+    default_network: str = "mainnet"
+
+    def active(self, network: str | None = None) -> HyperliquidNetwork:
+        name = network or self.default_network
+        if name not in ("mainnet", "testnet"):
+            raise ValueError(
+                f"Unknown Hyperliquid network: {name!r}. Must be 'mainnet' or 'testnet'."
+            )
+        return getattr(self, name)
+
+    @property
+    def api_url(self) -> str:
+        return self.active().api_url
+
+    @property
+    def ws_url(self) -> str:
+        return self.active().ws_url
 
 
 @dataclass(frozen=True)
@@ -158,10 +206,19 @@ class RiskConfig:
 
 
 @dataclass(frozen=True)
+class HyperliquidFeesConfig:
+    """HL fee assumptions used by paper fills (and any HL-aware backtest)."""
+
+    taker_bps: float = 4.5
+    maker_bps: float = 1.5
+
+
+@dataclass(frozen=True)
 class PortfolioConfig:
     risk: RiskConfig
     # Per-strategy capital ceilings, vended on start by the (TODO) allocator.
     allocations: dict[str, float] = field(default_factory=dict)
+    hyperliquid_fees: HyperliquidFeesConfig = field(default_factory=HyperliquidFeesConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +348,16 @@ class _HyperliquidCompat:
         return self._secrets.private_key
 
     @property
+    def testnet_private_key(self) -> SecretStr:
+        return self._secrets.testnet_private_key
+
+    @property
     def account_address(self) -> str:
         return self._secrets.account_address
+
+    @property
+    def testnet_account_address(self) -> str:
+        return self._secrets.testnet_account_address
 
     @property
     def api_url(self) -> str:
@@ -303,8 +368,19 @@ class _HyperliquidCompat:
         return self._venue.ws_url
 
     @property
+    def default_network(self) -> str:
+        return self._venue.default_network
+
+    def active(self, network: str | None = None) -> HyperliquidNetwork:
+        return self._venue.active(network)
+
+    @property
     def has_credentials(self) -> bool:
         return self._secrets.has_credentials
+
+    @property
+    def has_testnet_credentials(self) -> bool:
+        return self._secrets.has_testnet_credentials
 
 
 class _RiskCompat:
@@ -368,15 +444,40 @@ def load_config() -> TradingConfig:
         budget=BudgetConfig(**sys_yaml.get("budget", {})),
     )
 
+    hl_yaml = venues_yaml.get("hyperliquid", {}) or {}
+    if "mainnet" in hl_yaml or "testnet" in hl_yaml:
+        hl_venue = HyperliquidVenue(
+            mainnet=HyperliquidNetwork(**hl_yaml.get("mainnet", {})),
+            testnet=HyperliquidNetwork(**hl_yaml.get("testnet", {})),
+            default_network=hl_yaml.get("default_network", "mainnet"),
+        )
+    else:
+        # Legacy flat form (api_url / ws_url at top level). Promote it to
+        # mainnet and synthesize a testnet block from the public defaults.
+        hl_venue = HyperliquidVenue(
+            mainnet=HyperliquidNetwork(
+                api_url=hl_yaml.get("api_url", "https://api.hyperliquid.xyz"),
+                ws_url=hl_yaml.get("ws_url", "wss://api.hyperliquid.xyz/ws"),
+            ),
+            testnet=HyperliquidNetwork(
+                api_url="https://api.hyperliquid-testnet.xyz",
+                ws_url="wss://api.hyperliquid-testnet.xyz/ws",
+            ),
+            default_network="mainnet",
+        )
+
     venues = VenuesConfig(
         polymarket=PolymarketVenue(**venues_yaml.get("polymarket", {})),
-        hyperliquid=HyperliquidVenue(**venues_yaml.get("hyperliquid", {})),
+        hyperliquid=hl_venue,
         polygon=PolygonVenue(**venues_yaml.get("polygon", {})),
     )
 
     portfolio = PortfolioConfig(
         risk=RiskConfig(**portfolio_yaml.get("risk", {})),
         allocations=portfolio_yaml.get("allocations", {}) or {},
+        hyperliquid_fees=HyperliquidFeesConfig(
+            **(portfolio_yaml.get("hyperliquid_fees") or {})
+        ),
     )
 
     return TradingConfig(

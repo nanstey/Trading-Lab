@@ -177,6 +177,10 @@ test: ## Run full test suite with coverage report
 test-fast: ## Run tests, skip slow/integration tests
 	$(PYTEST) $(TEST_DIR) -v -m "not integration and not slow"
 
+.PHONY: test-hl-paper
+test-hl-paper: ## Run HL paper-fill engine tests only
+	$(PYTEST) $(TEST_DIR)/venues/hyperliquid/test_paper_fill.py -v
+
 .PHONY: test-cov
 test-cov: ## Run tests and open HTML coverage report
 	$(PYTEST) $(TEST_DIR) --cov=$(SRC) --cov-report=html
@@ -347,6 +351,31 @@ paper-run-legacy: ## Legacy GenericPaperRunner (monkey-patched, no real exec pat
 live-run: ## LIVE — same as paper-run but with REAL ORDERS. Requires TRADING_MODE=live + LIVE_TRADING_CONFIRMED=true
 	@if [ -z "$(SLUG)" ]; then echo "Usage: make live-run SLUG=<slug> [DURATION_SECS=3600] [CONFIRM=1]"; exit 1; fi
 	$(PYTHON) $(SCRIPTS)/live_run.py --slug $(SLUG) $(if $(DURATION_SECS),--duration-secs $(DURATION_SECS),) $(if $(CONFIRM),--i-understand-this-is-live,)
+
+# -------- Hyperliquid: paper + testnet + mainnet --------
+# `paper-hl` runs in-process fills against the live HL book (no network writes).
+# `live-hl-testnet` signs real orders against HL testnet (faucet USDC).
+# `live-hl` signs real orders against HL mainnet — REAL MONEY, triple-gate.
+
+.PHONY: paper-hl
+paper-hl: ## Paper-trade an HL hypothesis (in-process fills, no network writes)
+	@if [ -z "$(HYPOTHESIS)" ]; then echo "Usage: make paper-hl HYPOTHESIS=<slug> [DURATION_SECS=600] [TESTNET=1]"; exit 1; fi
+	$(PYTHON) $(SCRIPTS)/paper_run_v2.py --venue hyperliquid --slug $(HYPOTHESIS) \
+	    $(if $(DURATION_SECS),--duration-secs $(DURATION_SECS),) \
+	    $(if $(TESTNET),--testnet,)
+
+.PHONY: live-hl-testnet
+live-hl-testnet: ## Run HL hypothesis against TESTNET (faucet USDC; no real money)
+	@if [ -z "$(HYPOTHESIS)" ]; then echo "Usage: make live-hl-testnet HYPOTHESIS=<slug> [DURATION_SECS=600]"; exit 1; fi
+	$(PYTHON) $(SCRIPTS)/live_run.py --venue hyperliquid --testnet --slug $(HYPOTHESIS) \
+	    $(if $(DURATION_SECS),--duration-secs $(DURATION_SECS),)
+
+.PHONY: live-hl
+live-hl: ## Run HL hypothesis against MAINNET (real money — requires triple-gate)
+	@if [ -z "$(HYPOTHESIS)" ]; then echo "Usage: make live-hl HYPOTHESIS=<slug> [DURATION_SECS=3600]"; exit 1; fi
+	$(PYTHON) $(SCRIPTS)/live_run.py --venue hyperliquid --slug $(HYPOTHESIS) \
+	    --i-understand-this-is-live \
+	    $(if $(DURATION_SECS),--duration-secs $(DURATION_SECS),)
 
 .PHONY: data-ingest
 data-ingest: ## Continuous data ingestion daemon (long-lived; SIGINT to stop)

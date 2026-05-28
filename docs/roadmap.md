@@ -217,7 +217,7 @@ Beyond Phase 4, potential research directions include:
 - **Volatility-aware quoting**: Tighten spreads in low-vol, widen in high-vol
 - **Cross-market correlation arb**: Exploit correlated events mispricing
 - **ML probability models**: Neural network for event probability estimation
-- **Hyperliquid execution integration**: Full Rust-based HL order placement
+- **Hyperliquid execution integration**: paper + testnet shipped (`HyperliquidPaperFillEngine`, `HyperliquidRunner`, `make paper-hl` / `make live-hl-testnet` / `make live-hl`). Mainnet runs are gated behind the live triple-gate and still need a real edge-claim strategy (currently only the `hl-smoke` plumbing hypothesis exists). Future work: Rust-based HL order placement hot path.
 - **Automated parameter tuning**: Bayesian optimization of spread_bps, etc.
 
 ---
