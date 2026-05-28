@@ -16,24 +16,45 @@ TRADING_LAB=/home/$USER/Code/Trading-Lab
 0 4 * * *  cd $TRADING_LAB && make sync-markets         >> logs/cron_sync.log  2>&1
 0 4 * * 0  cd $TRADING_LAB && make sync-markets-full    >> logs/cron_sync.log  2>&1
 
-# Daily: drain manual_inbox into PROPOSED (RSS opt-in via RSS=1).
-0 9 * * *  cd $TRADING_LAB && make research-discover    >> logs/cron_discover.log 2>&1
+# Strategy-ingestion middle pipeline — must run in stage order.
+# capture → dossier → distill → specify → discover.
+#
+# Every 6h: poll public sources and archive raw captures + enqueue an
+# ingestion row at CAPTURED/PENDING.
+0 */6 * * *  cd $TRADING_LAB && make research-capture SOURCE_ARGS='--all' >> logs/cron_capture.log 2>&1
+
+# Every 6h, +15m: render full-content dossier for the oldest
+# CAPTURED/PENDING row (single-item per run; mechanical).
+15 */6 * * * cd $TRADING_LAB && make build-dossiers      >> logs/cron_dossiers.log 2>&1
+
+# Every 6h, +30m: scaffold a memo for the oldest DOSSIER_READY/PENDING
+# row. Judgment-heavy — pair with an agent runbook to fill the memo.
+30 */6 * * * cd $TRADING_LAB && make distill-ideas      >> logs/cron_distill.log 2>&1
+
+# Every 6h, +45m: scaffold a spec for the oldest MEMO_READY/PENDING
+# row (assumes a thesis name was already assigned by an operator/agent).
+45 */6 * * * cd $TRADING_LAB && make specify-hypotheses >> logs/cron_specify.log 2>&1
+
+# Every 6h offset, +60m: promote SPEC_READY/PENDING ingestion rows into
+# PROPOSED. This is the only cron that writes to the strategy lifecycle.
+0 1-23/6 * * *  cd $TRADING_LAB && make research-discover    >> logs/cron_discover.log 2>&1
 
 # Every 6h: take one SMOKE_PASS or BACKTEST slug and run eval. The script
 # is single-shot; an outer loop / agent can drive selecting which slug.
-0 */6 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state SMOKE_PASS | jq -r '.[0].slug // empty') ; \
+0 */6 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state SMOKE_PASS | jq -r '.[-1].slug // empty') ; \
              [ -n "$SLUG" ] && make research-test SLUG="$SLUG" START=2026-05-24 END=$(date -u +\%Y-\%m-\%d) >> logs/cron_test.log 2>&1
 
 # Daily 03:00: walk-forward optimise the oldest OPTIMIZE slug.
 0 3 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state OPTIMIZE | jq -r '.[-1].slug // empty') ; \
            [ -n "$SLUG" ] && make research-optimize SLUG="$SLUG" START=2026-05-24 END=$(date -u +\%Y-\%m-\%d) >> logs/cron_optimize.log 2>&1
 
-# Every 10 min: auto-retirement watcher (single-day + 7-day drawdown rules).
-*/10 * * * *  cd $TRADING_LAB && make paper-watcher     >> logs/cron_watcher.log  2>&1
-
-# Every PAPER slug: roll up today's paper-trades jsonl into a summary report.
+# Hourly at :30: roll up today's paper-trades jsonl into a summary report.
 # Schedule per-slug; here's the pattern (one line per slug).
 30 * * * *  cd $TRADING_LAB && make paper-summary SLUG=tick-mean-revert >> logs/cron_summary.log 2>&1
+
+# Hourly at :35: auto-retirement watcher (single-day + 7-day drawdown rules).
+# Runs after paper-summary so it sees the latest realised-PnL rows.
+35 * * * *  cd $TRADING_LAB && make paper-watcher     >> logs/cron_watcher.log  2>&1
 ```
 
 ## Option B — `loop` skill (interactive sessions)

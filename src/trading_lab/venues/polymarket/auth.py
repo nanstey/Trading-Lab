@@ -33,6 +33,7 @@ class L2Credentials:
     api_key: str
     api_secret: str        # base64-encoded HMAC secret
     api_passphrase: str
+    address: str = ""      # signer address used for POLY-ADDRESS on L2 requests
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,13 +180,13 @@ def sign_l2_request(
 
     secret_bytes = b64decode(creds.api_secret)
     sig_bytes = hmac.new(secret_bytes, message.encode(), hashlib.sha256).digest()
-    signature = b64encode(sig_bytes).decode()
+    signature = b64encode(sig_bytes).decode().replace("+", "-").replace("/", "_")
 
-    # We need the wallet address associated with the L2 key.
-    # The server correlates api_key → address on its side.
-    # We send api_key as the address identifier here.
+    # L2 auth uses the signer / owner address, not the API key UUID.
+    poly_address = creds.address or creds.api_key
+
     return L2Headers(
-        POLY_ADDRESS=creds.api_key,   # api_key IS the identifier address
+        POLY_ADDRESS=poly_address,
         POLY_SIGNATURE=signature,
         POLY_TIMESTAMP=ts,
         POLY_API_KEY=creds.api_key,
@@ -264,4 +265,5 @@ async def derive_api_key(
         api_key=data["apiKey"],
         api_secret=data["secret"],
         api_passphrase=data["passphrase"],
+        address=address,
     )

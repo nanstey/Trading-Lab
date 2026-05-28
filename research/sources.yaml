@@ -1,21 +1,53 @@
+# Source registry for automated strategy capture.
+#
+# `scripts/capture_strategy_ideas.py` reads this file, archives raw source
+# material under `research/captures/`, and writes normalized candidate markdown
+# into `research/manual_inbox/` for the existing discovery step.
+#
+# Principles:
+# - prefer no-secret public sources for v1
+# - keep the active source pack small until noise is understood
+# - use `enabled: false` to keep a source defined but dormant
+
 rss:
-- name: hudson-thames
-  url: https://hudsonthames.org/feed/
-  window_days: 30
-  enabled: false
-- name: robot-wealth
-  url: https://www.robotwealth.com/feed/
-  window_days: 30
-  enabled: false
-- name: quantocracy
-  url: https://quantocracy.com/feed/
-  window_days: 14
-  enabled: true
+  - name: quantocracy
+    url: https://quantocracy.com/feed/
+    window_days: 14
+    enabled: true
+  - name: robot-wealth
+    url: https://www.robotwealth.com/feed/
+    window_days: 30
+    enabled: true
+  - name: hudson-thames
+    url: https://hudsonthames.org/feed/
+    window_days: 30
+    enabled: true
+
+youtube:
+  - name: quant-channel
+    channel_id: UCvJJ_dzjViJCoLf5uKUTwoA
+    feed_url: https://www.youtube.com/feeds/videos.xml?channel_id=UCvJJ_dzjViJCoLf5uKUTwoA
+    window_days: 21
+    languages: [en]
+    keywords: [trading, option, options, kelly, arbitrage, market, pricing, volatility, portfolio, liquidity]
+    enabled: true
+  # Add more transcript-friendly channels here as they are vetted.
+
 arxiv:
-  categories:
-  - q-fin.TR
-  - q-fin.PM
-  - q-fin.ST
-  window_days: 7
-  enabled: false
+  - name: q-fin-trading
+    category: q-fin.TR
+    window_days: 14
+    max_results: 10
+    enabled: true
+  - name: q-fin-portfolio-management
+    category: q-fin.PM
+    window_days: 14
+    max_results: 10
+    enabled: true
+  - name: q-fin-statistics
+    category: q-fin.ST
+    window_days: 14
+    max_results: 10
+    enabled: true
+
 manual_inbox: research/manual_inbox/

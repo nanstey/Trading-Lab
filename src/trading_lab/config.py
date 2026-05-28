@@ -49,6 +49,10 @@ class PolymarketSecrets(BaseSettings):
     api_key: str = Field(default="")
     api_secret: SecretStr = Field(default=SecretStr(""))
     api_passphrase: SecretStr = Field(default=SecretStr(""))
+    # Optional account/funder address when the tradable wallet differs from the signer EOA.
+    funder: str = Field(default="")
+    # Wallet signature type: 0=EOA, 1=proxy, 2=gnosis safe, 3=POLY_1271 deposit wallet.
+    signature_type: int = Field(default=0)
 
     @field_validator("private_key", mode="before")
     @classmethod
@@ -238,6 +242,14 @@ class _PolymarketCompat:
     @property
     def api_passphrase(self) -> SecretStr:
         return self._secrets.api_passphrase
+
+    @property
+    def funder(self) -> str:
+        return self._secrets.funder
+
+    @property
+    def signature_type(self) -> int:
+        return self._secrets.signature_type
 
     @property
     def has_l1_credentials(self) -> bool:

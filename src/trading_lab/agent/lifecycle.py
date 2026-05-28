@@ -110,10 +110,44 @@ CREATE TABLE IF NOT EXISTS budget_ledger (
     live_starts INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS ingestion_items (
+    intake_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_url TEXT NOT NULL UNIQUE,
+    source_type TEXT NOT NULL,
+    source_title TEXT,
+    capture_slug TEXT NOT NULL,
+    thesis_name TEXT,
+    thesis_slug TEXT,
+    folder_path TEXT NOT NULL,
+    raw_capture_path TEXT,
+    stage TEXT NOT NULL DEFAULT 'CAPTURED',
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    next_action TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ingestion_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    intake_id INTEGER NOT NULL,
+    timestamp TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    from_stage TEXT,
+    to_stage TEXT,
+    action TEXT NOT NULL,
+    details_json TEXT,
+    FOREIGN KEY (intake_id) REFERENCES ingestion_items(intake_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_hypotheses_state ON hypotheses(state);
 CREATE INDEX IF NOT EXISTS idx_hypotheses_rejection ON hypotheses(rejection_category);
 CREATE INDEX IF NOT EXISTS idx_experiments_slug ON experiments(slug);
 CREATE INDEX IF NOT EXISTS idx_transitions_slug ON lifecycle_transitions(slug);
+CREATE INDEX IF NOT EXISTS idx_ingestion_items_stage_status ON ingestion_items(stage, status);
+CREATE INDEX IF NOT EXISTS idx_ingestion_items_thesis_slug ON ingestion_items(thesis_slug);
+CREATE INDEX IF NOT EXISTS idx_ingestion_items_capture_slug ON ingestion_items(capture_slug);
+CREATE INDEX IF NOT EXISTS idx_ingestion_events_intake ON ingestion_events(intake_id, id);
 """
 
 

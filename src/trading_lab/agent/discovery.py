@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -367,3 +368,117 @@ def candidate_to_hypothesis_md(
 
     out_path.write_text("\n".join(fm_lines + body_lines).strip() + "\n")
     return out_path
+
+
+def register_from_ingestion(
+    intake_id: int,
+    *,
+    db_path: Path = DEFAULT_DB_PATH,
+    hypotheses_dir: Path = DEFAULT_HYPOTHESES_DIR,
+    actor: str = "agent:discover:unknown",
+) -> dict[str, Any]:
+    """Promote a SPEC_READY/PENDING ingestion row into a PROPOSED hypothesis.
+
+    Validates the existing `spec.md` (no new file is written — the folder is
+    canonical), inserts the lifecycle hypothesis row keyed by `thesis_slug`,
+    and flips the ingestion row to `DISCOVERED/DONE`.
+    """
+    from trading_lab.agent import ingestion, lifecycle
+    from trading_lab.agent.spec_validation import validate_spec_markdown
+
+    item = ingestion.get(intake_id, db_path=db_path)
+    if item is None:
+        raise ValueError(f"unknown intake_id: {intake_id}")
+    if item.stage != ingestion.Stage.SPEC_READY.value:
+        raise ValueError(f"intake {intake_id} not at SPEC_READY (current={item.stage})")
+
+    folder = Path(item.folder_path)
+    spec_path = folder / "spec.md"
+    if not spec_path.exists():
+        raise FileNotFoundError(f"spec.md missing: {spec_path}")
+    spec_text = spec_path.read_text()
+    validation = validate_spec_markdown(spec_text)
+    if not validation.is_valid:
+        raise ValueError(f"spec validation failed for {spec_path}: {validation.reason}")
+
+    thesis_slug = item.thesis_slug or item.capture_slug
+    if not thesis_slug:
+        raise ValueError(f"intake {intake_id} has no thesis_slug or capture_slug")
+
+    # Pull the Hypothesis section out as a short summary; cap to ~1k chars.
+    summary = ""
+    m = re.search(r"^##\s+Hypothesis\s*\n(.*?)(?=^##\s|\Z)", spec_text, re.MULTILINE | re.DOTALL)
+    if m:
+        summary = m.group(1).strip()
+    summary = summary[:1000] if summary else item.source_title[:1000]
+
+    lifecycle.add_hypothesis(
+        slug=thesis_slug,
+        state=lifecycle.State.PROPOSED.value,
+        source_url=item.source_url,
+        source_type=item.source_type,
+        summary=summary,
+        actor=actor,
+        db_path=db_path,
+    )
+
+    ingestion.advance_stage(
+        intake_id,
+        ingestion.Stage.DISCOVERED.value,
+        status=ingestion.Status.DONE.value,
+        actor=actor,
+        action="discovered",
+        next_action="codegen",
+        details={
+            "thesis_slug": thesis_slug,
+            "spec_path": str(spec_path),
+        },
+        db_path=db_path,
+    )
+
+    return {
+        "intake_id": intake_id,
+        "thesis_slug": thesis_slug,
+        "spec_path": str(spec_path),
+        "folder_path": str(folder),
+    }
+
+
+def register_candidate(
+    candidate: Candidate,
+    *,
+    db_path: Path = DEFAULT_DB_PATH,
+    hypotheses_dir: Path = DEFAULT_HYPOTHESES_DIR,
+    actor: str = "agent:discover:unknown",
+    inbox_dir: Path | None = DEFAULT_INBOX,
+    archive_inbox: bool = True,
+) -> dict[str, Any]:
+    """Materialize one candidate into the canonical PROPOSED hypothesis state."""
+    from trading_lab.agent import lifecycle
+
+    md_path = candidate_to_hypothesis_md(candidate, hypotheses_dir)
+    lifecycle.add_hypothesis(
+        slug=candidate.slug,
+        state=lifecycle.State.PROPOSED.value,
+        source_url=candidate.source_url,
+        source_type=candidate.source_type,
+        summary=candidate.summary[:1000],
+        market_criteria=candidate.market_criteria,
+        actor=actor,
+        db_path=db_path,
+    )
+
+    archived_to = None
+    if archive_inbox and inbox_dir is not None:
+        src = inbox_dir / f"{candidate.slug}.md"
+        if src.exists():
+            archived_root = inbox_dir / ".archived" / datetime.now(tz=UTC).strftime("%Y-%m-%d")
+            archived_root.mkdir(parents=True, exist_ok=True)
+            archived_to = archived_root / src.name
+            shutil.move(str(src), str(archived_to))
+
+    return {
+        "slug": candidate.slug,
+        "hypothesis_path": str(md_path),
+        "archived_to": str(archived_to) if archived_to else None,
+    }

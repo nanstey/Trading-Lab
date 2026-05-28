@@ -9,6 +9,12 @@ This document is the contract between the loop's stages. Every runbook in
                         budget.check(field)
                               │
                               ▼
+   internet sources   ┌──────────────────┐
+   (YouTube / RSS /   │  SOURCE CAPTURE  │  scripts/capture_strategy_ideas.py
+   arXiv papers) ───▶ │  agent/source_capture │  → research/captures/raw/...
+                      └────────┬─────────┘  → research/manual_inbox/*.md
+                               │
+                               ▼
    manual_inbox/      ┌──────────────────┐
    + RSS feeds  ────▶ │  DISCOVERY       │  runbooks/discover-strategies.md
                       │  agent/discovery │  → research/hypotheses/<slug>.md
@@ -54,7 +60,7 @@ intentionally narrow: a stage doesn't get tools it doesn't need.
 
 | Stage | Required tools | Read-only data sources | Writes |
 |---|---|---|---|
-| Discovery | `WebFetch`, `Bash` (curl/feedparser), `Read`, `Write` | RSS feeds, `manual_inbox/` | `research/hypotheses/<slug>.md`, DB row (PROPOSED) |
+| Discovery | `WebFetch`, `Bash` (curl/feedparser), `Read`, `Write` | RSS feeds, YouTube transcripts, arXiv, `manual_inbox/`, `research/captures/raw/` | `research/hypotheses/<slug>.md`, DB row (PROPOSED) |
 | Codegen | `Read`, `Write`, `Edit`, `Bash` | hypothesis MD, AGENTS.md, existing strategy templates | `src/trading_lab/strategies/<slug>.py`, `tests/strategies/test_<slug>.py` |
 | Smoke | `Bash` only (just runs the script) | the new strategy file | `research/snapshots/<hash>.py`, state transition |
 | Backtest | `Bash` only | catalog parquet, market_catalog.db | `experiments` row, state transition |

@@ -35,8 +35,8 @@ The two don't share Python state; they share **the events log**.
    OPTIMIZE → optimize_strategy      → PAPER_READY          | events.jsonl
    PAPER_READY → [HUMAN]             → PAPER                | append-only
    PAPER → paper_run.py (long-lived) → signals → logs/paper_*.jsonl
-   PAPER → paper_summary (hourly)    → reports + experiments row
-   PAPER → paper_watcher (10-min)    → HALTED / RETIRED     |
+   PAPER → paper_summary (:30 hourly)→ reports + experiments row
+   PAPER → paper_watcher (:35 hourly)→ HALTED / RETIRED     |
                                                             +-----+
                                                                   |
                                                                   v
@@ -73,19 +73,20 @@ PATH=/usr/local/bin:/usr/bin:/bin
 0 9 * * *  cd $TRADING_LAB && make research-discover RSS=1  >> logs/cron_discover.log 2>&1
 
 # Every 6h at minute 7: take the oldest SMOKE_PASS slug and eval it.
-7 */6 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state SMOKE_PASS | jq -r '.[0].slug // empty') ; \
+7 */6 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state SMOKE_PASS | jq -r '.[-1].slug // empty') ; \
              [ -n "$SLUG" ] && make research-test SLUG="$SLUG" START=$(date -u -d "30 days ago" +\%Y-\%m-\%d) END=$(date -u +\%Y-\%m-\%d) >> logs/cron_test.log 2>&1
 
 # Daily 03:00 UTC: walk-forward optimise the oldest OPTIMIZE slug.
 0 3 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state OPTIMIZE | jq -r '.[-1].slug // empty') ; \
            [ -n "$SLUG" ] && make research-optimize SLUG="$SLUG" START=$(date -u -d "30 days ago" +\%Y-\%m-\%d) END=$(date -u +\%Y-\%m-\%d) >> logs/cron_optimize.log 2>&1
 
-# Every 10 min: auto-retirement watcher.
-*/10 * * * *  cd $TRADING_LAB && make paper-watcher     >> logs/cron_watcher.log 2>&1
-
 # Hourly at :30: summarise every PAPER slug. The watcher needs these rows.
 30 * * * *  cd $TRADING_LAB && for slug in $(.venv/bin/python scripts/research_cli.py list --state PAPER | jq -r '.[].slug'); do \
                 make paper-summary SLUG="$slug" >> logs/cron_summary.log 2>&1 ; done
+
+# Hourly at :35: auto-retirement watcher, after paper-summary has written
+# the latest realised-PnL rows.
+35 * * * *  cd $TRADING_LAB && make paper-watcher     >> logs/cron_watcher.log 2>&1
 
 # Every 15 min: operator agent reads events + decides what to forward.
 # (This entry assumes an `operator-agent.sh` wrapper that calls

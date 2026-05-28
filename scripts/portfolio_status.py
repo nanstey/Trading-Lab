@@ -44,8 +44,8 @@ from trading_lab.config import load_config  # noqa: E402
 log = logging.getLogger("portfolio_status")
 
 
-def _build_equity_provider(cfg, refresh: bool):
-    from trading_lab.agent.venue_equity import PolymarketEquityProvider
+def _build_equity_provider(cfg, refresh: bool, *, allow_paper_fallback: bool = False):
+    from trading_lab.agent.venue_equity import PolymarketEquityProvider, StaticEquityProvider
     from trading_lab.venues.polymarket.auth import L2Credentials, derive_address
     from trading_lab.venues.polymarket.client import PolymarketRestClient
 
@@ -56,6 +56,7 @@ def _build_equity_provider(cfg, refresh: bool):
         wallet = derive_address(pk)
     except Exception:
         return None
+    account_address = cfg.polymarket.funder or wallet
 
     rest = None
     if cfg.polymarket.has_l2_credentials:
@@ -64,17 +65,30 @@ def _build_equity_provider(cfg, refresh: bool):
                 api_key=cfg.polymarket.api_key,
                 api_secret=cfg.polymarket.api_secret.get_secret_value(),
                 api_passphrase=cfg.polymarket.api_passphrase.get_secret_value(),
+                address=wallet,
             )
             rest = PolymarketRestClient(http_url=cfg.polymarket.host, creds=creds)
         except Exception:
             pass
 
-    provider = PolymarketEquityProvider(wallet_address=wallet, rest_client=rest)
+    provider = PolymarketEquityProvider(wallet_address=account_address, rest_client=rest)
     if refresh:
         try:
             asyncio.run(provider.refresh())
         except Exception as exc:
             log.warning("equity refresh failed: %s", exc)
+        if provider.current_usdc() <= 0 and allow_paper_fallback:
+            fallback_usdc = float(cfg.portfolio.risk.max_total_exposure_usdc or 0.0)
+            if fallback_usdc > 0:
+                if rest is not None:
+                    try:
+                        asyncio.run(rest.close())
+                    except Exception:
+                        pass
+                return StaticEquityProvider(
+                    total_usdc=fallback_usdc,
+                    source="paper-fallback",
+                )
     return provider
 
 
@@ -89,7 +103,11 @@ def collect_status(refresh: bool) -> dict:
         for h in list_hypotheses(state=state):
             active.append({"slug": h.slug, "state": state})
 
-    equity_provider = _build_equity_provider(cfg, refresh=refresh)
+    equity_provider = _build_equity_provider(
+        cfg,
+        refresh=refresh,
+        allow_paper_fallback=bool(refresh and active and not any(x["state"] == State.LIVE.value for x in active)),
+    )
     venue_equity = (
         equity_provider.current_usdc() if equity_provider is not None else 0.0
     )
