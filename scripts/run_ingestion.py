@@ -108,9 +108,10 @@ async def run(args: argparse.Namespace) -> int:
     # constructor — only the WS path is exercised here.
     from trading_lab.venues.polymarket.auth import L2Credentials
     from trading_lab.venues.polymarket.client import PolymarketRestClient
+    from trading_lab.venues.polymarket.endpoints import HTTP_URL
 
     creds = L2Credentials(api_key="", api_secret="", api_passphrase="")
-    rest = PolymarketRestClient(http_url="https://clob.polymarket.com", creds=creds)
+    rest = PolymarketRestClient(http_url=HTTP_URL, creds=creds)
 
     async with PolymarketDataIngester(catalog=catalog, client=rest) as ing:
         # `run_continuous` blocks on the WS task. Race it against a

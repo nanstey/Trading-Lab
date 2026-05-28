@@ -125,8 +125,12 @@ make research-status SLUG=tick-mean-revert # one slug + history + experiments
 - See [docs/polymarket_auth.md](docs/polymarket_auth.md) for auth details
 
 ### Hyperliquid — secondary
-- Perp futures DEX
-- Auth + client scaffolding present but no strategy uses it yet
+- Perp futures DEX, mainnet + testnet supported
+- EIP-712 signing; separate API wallets per network (`HL_PRIVATE_KEY`, `HL_TESTNET_PRIVATE_KEY`)
+- Paper trading via `HyperliquidPaperFillEngine` (in-process fills against the live book, no network writes)
+- See [runbooks/hyperliquid-testnet.md](runbooks/hyperliquid-testnet.md) for the paper → testnet → mainnet flow
+- Run with `make paper-hl HYPOTHESIS=<slug>`, `make live-hl-testnet HYPOTHESIS=<slug>`, or `make live-hl HYPOTHESIS=<slug>` (mainnet, triple-gate)
+- `hl-smoke` is a plumbing-only smoke strategy — never promote past `LIVE_READY`
 
 ## Safety
 

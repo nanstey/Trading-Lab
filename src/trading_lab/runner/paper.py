@@ -41,6 +41,7 @@ from typing import Any
 import aiohttp
 
 from trading_lab.config import TradingConfig
+from trading_lab.venues.polymarket.endpoints import WS_MARKET_URL
 
 log = logging.getLogger(__name__)
 
@@ -198,7 +199,7 @@ class PaperRunner:
         """Connect to the market channel and dispatch book updates."""
         import websockets
 
-        url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+        url = WS_MARKET_URL
         sub = {"type": "market", "assets_ids": token_ids}
 
         async with aiohttp.ClientSession() as _:

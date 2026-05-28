@@ -23,8 +23,10 @@ load_dotenv()
 async def main() -> None:
 
     from trading_lab.venues.hyperliquid.client import HyperliquidRestClient
+    from trading_lab.venues.hyperliquid.endpoints import MAINNET_HTTP_URL as HL_HTTP_URL
     from trading_lab.venues.polymarket.auth import L2Credentials
     from trading_lab.venues.polymarket.client import PolymarketRestClient
+    from trading_lab.venues.polymarket.endpoints import HTTP_URL as PM_HTTP_URL
 
     # Polymarket
     pm_creds = L2Credentials(
@@ -33,13 +35,13 @@ async def main() -> None:
         api_passphrase=os.environ.get("POLYMARKET_API_PASSPHRASE", ""),
     )
     pm_client = PolymarketRestClient(
-        http_url=os.environ.get("POLYMARKET_HTTP_URL", "https://clob.polymarket.com"),
+        http_url=os.environ.get("POLYMARKET_HTTP_URL", PM_HTTP_URL),
         creds=pm_creds,
     )
 
     # Hyperliquid
     hl_client = HyperliquidRestClient(
-        http_url=os.environ.get("HYPERLIQUID_HTTP_URL", "https://api.hyperliquid.xyz"),
+        http_url=os.environ.get("HYPERLIQUID_HTTP_URL", HL_HTTP_URL),
         private_key=os.environ.get("HYPERLIQUID_PRIVATE_KEY", "0x" + "00" * 32),
         account_address=os.environ.get("HYPERLIQUID_ACCOUNT_ADDRESS", ""),
     )

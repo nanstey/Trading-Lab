@@ -168,6 +168,15 @@ class Hypothesis:
     strategy_class: str = ""
     strategy_config_class: str = ""
 
+    @property
+    def venue(self) -> str:
+        """Venue this hypothesis runs against. Defaults to polymarket.
+
+        Stored in `market_criteria["venue"]` (no schema migration needed).
+        """
+        v = (self.market_criteria.get("venue") or "polymarket").lower()
+        return v
+
 
 def init_db(path: Path = DEFAULT_DB_PATH) -> None:
     """Create the experiment DB schema. Idempotent."""

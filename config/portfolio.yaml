@@ -5,6 +5,14 @@
 # runners. The allocator reads current deployed USDC from NT's `Portfolio`
 # and rejects any order that would push the strategy over its per-slug cap.
 
+# Hyperliquid fee assumptions used by paper fills and any HL-aware backtest.
+# Public taker tier is 0.045% (4.5 bps) at time of writing; tighten if your
+# account qualifies for a better tier. Paper PnL diverges from real PnL by
+# the fee delta — keep this honest.
+hyperliquid_fees:
+  taker_bps: 4.5
+  maker_bps: 1.5
+
 risk:
   # Per-instrument (single token) cap — used as final-fallback cap for a
   # slug when neither `allocations` NOR fair-share apply.

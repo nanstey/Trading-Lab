@@ -116,8 +116,15 @@ async def check_polymarket_connectivity(_host: str) -> CheckResult:
         )
 
 
-async def check_hyperliquid_connectivity(api_url: str) -> CheckResult:
-    """Check if Hyperliquid API is reachable."""
+async def check_hyperliquid_connectivity(
+    api_url: str, network: str = "mainnet"
+) -> CheckResult:
+    """Check if a Hyperliquid endpoint is reachable.
+
+    `network` is mainnet or testnet; it's used only for labelling the
+    result so the operator can tell which endpoint the ping reflects.
+    """
+    label = f"Hyperliquid API ({network})"
     try:
         import aiohttp
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5.0)) as session:
@@ -126,14 +133,14 @@ async def check_hyperliquid_connectivity(api_url: str) -> CheckResult:
                 data = await resp.json()
                 coin_count = len(data.get("universe", []))
                 return CheckResult(
-                    name="Hyperliquid API",
+                    name=label,
                     passed=True,
                     value=f"HTTP {resp.status}",
                     note=f"{coin_count} perpetual markets available",
                 )
     except Exception as exc:
         return CheckResult(
-            name="Hyperliquid API",
+            name=label,
             passed=False,
             value="unreachable",
             note=str(exc)[:80],
@@ -248,7 +255,7 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
         report.add(check_package_installed(pkg, import_name))
 
     # Config files (YAML — committed to git)
-    for yaml_name in ("system.yaml", "venues.yaml", "portfolio.yaml"):
+    for yaml_name in ("system.yaml", "portfolio.yaml"):
         path = Path("config") / yaml_name
         report.add(CheckResult(
             name=f"config/{yaml_name}",
@@ -256,13 +263,13 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
             value="present" if path.exists() else "MISSING",
         ))
 
-    # Polymarket credentials (secrets only — endpoints come from venues.yaml)
+    # Polymarket credentials (secrets only — endpoint URLs are code constants)
     report.add(check_env_var("POLY_PRIVATE_KEY", required=False, sensitive=True))
     report.add(check_env_var("POLY_API_KEY", required=False, sensitive=True))
     report.add(check_env_var("POLY_API_SECRET", required=False, sensitive=True))
     report.add(check_env_var("POLY_API_PASSPHRASE", required=False, sensitive=True))
 
-    # Surface the venue endpoint we'll actually use (read from venues.yaml).
+    # Surface the venue endpoint we'll actually use (defined in venues.<v>.endpoints).
     try:
         from trading_lab.config import load_config
         _cfg = load_config()
@@ -271,8 +278,16 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
             passed=True, value=_cfg.venues.polymarket.http_url,
         ))
         report.add(CheckResult(
-            name="venues.hyperliquid.api_url",
-            passed=True, value=_cfg.venues.hyperliquid.api_url,
+            name="venues.hyperliquid.mainnet.api_url",
+            passed=True, value=_cfg.venues.hyperliquid.mainnet.api_url,
+        ))
+        report.add(CheckResult(
+            name="venues.hyperliquid.testnet.api_url",
+            passed=True, value=_cfg.venues.hyperliquid.testnet.api_url,
+        ))
+        report.add(CheckResult(
+            name="venues.hyperliquid.default_network",
+            passed=True, value=_cfg.venues.hyperliquid.default_network,
         ))
         report.add(CheckResult(
             name="portfolio.risk.daily_loss_limit_usdc",
@@ -282,8 +297,9 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
     except Exception as exc:
         report.add(CheckResult(name="config load", passed=False, value=f"FAILED: {exc}"))
 
-    # Hyperliquid credentials
+    # Hyperliquid credentials — separate slots per network.
     report.add(check_env_var("HL_PRIVATE_KEY", required=False, sensitive=True))
+    report.add(check_env_var("HL_TESTNET_PRIVATE_KEY", required=False, sensitive=True))
 
     # Data directory
     report.add(check_data_directory(Path("./data")))
@@ -312,14 +328,45 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
     # Connectivity checks
     if not args.no_connectivity:
         print("Checking API connectivity...")
-        # Read endpoints from venues.yaml via load_config — see the config
-        # block above.
-        poly_host = _cfg.venues.polymarket.http_url if "_cfg" in dir() else \
-            "https://clob.polymarket.com"
-        hl_url = _cfg.venues.hyperliquid.api_url if "_cfg" in dir() else \
-            "https://api.hyperliquid.xyz"
+        # Read endpoints from load_config (sourced from venues.<v>.endpoints).
+        from trading_lab.venues.polymarket.endpoints import HTTP_URL as PM_HTTP_URL
+        poly_host = _cfg.venues.polymarket.http_url if "_cfg" in dir() else PM_HTTP_URL
         report.add(await check_polymarket_connectivity(poly_host))
-        report.add(await check_hyperliquid_connectivity(hl_url))
+
+        # Hyperliquid: ping the requested network. If both wallet keys are
+        # present (or `--network all`), ping both networks so the operator
+        # gets a full picture.
+        if "_cfg" in dir():
+            hl = _cfg.venues.hyperliquid
+            poly_secrets = _cfg.hyperliquid_secrets
+        else:
+            hl = None
+            poly_secrets = None
+
+        if hl is None:
+            from trading_lab.venues.hyperliquid.endpoints import MAINNET_HTTP_URL
+            report.add(await check_hyperliquid_connectivity(
+                MAINNET_HTTP_URL, network="mainnet",
+            ))
+        else:
+            networks: list[str] = []
+            if args.network == "all":
+                networks = ["mainnet", "testnet"]
+            elif args.network in ("mainnet", "testnet"):
+                networks = [args.network]
+            else:
+                # Default: ping whichever network has creds; always
+                # include the configured default_network.
+                networks = [hl.default_network]
+                if poly_secrets is not None:
+                    if poly_secrets.has_testnet_credentials and "testnet" not in networks:
+                        networks.append("testnet")
+                    if poly_secrets.has_credentials and "mainnet" not in networks:
+                        networks.append("mainnet")
+            for net in networks:
+                report.add(await check_hyperliquid_connectivity(
+                    hl.active(net).api_url, network=net,
+                ))
     else:
         print("Skipping connectivity checks (--no-connectivity)")
 
@@ -340,6 +387,13 @@ def parse_args() -> argparse.Namespace:
         "--no-connectivity",
         action="store_true",
         help="Skip API connectivity checks",
+    )
+    parser.add_argument(
+        "--network",
+        choices=("mainnet", "testnet", "all", "auto"),
+        default="auto",
+        help="Which Hyperliquid network(s) to ping. 'auto' (default) pings "
+             "the configured default + any network with credentials present.",
     )
     return parser.parse_args()
 

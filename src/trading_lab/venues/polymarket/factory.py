@@ -23,17 +23,20 @@ from nautilus_trader.live.factories import LiveDataClientFactory, LiveExecClient
 from trading_lab.venues.polymarket.auth import L2Credentials
 from trading_lab.venues.polymarket.client import PolymarketRestClient, PolymarketWsClient
 from trading_lab.venues.polymarket.data import PolymarketDataClient
+from trading_lab.venues.polymarket.endpoints import (
+    EXCHANGE_ADDRESS,
+    HTTP_URL,
+    WS_MARKET_URL,
+    WS_USER_URL,
+)
 from trading_lab.venues.polymarket.execution import PolymarketExecutionClient
-
-_PM_WS_MARKET = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-_PM_WS_USER = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 
 
 class PolymarketDataClientConfig(LiveDataClientConfig, frozen=True):
     """Config for Polymarket data client (market WS + REST)."""
 
-    http_url: str = "https://clob.polymarket.com"
-    ws_url: str = _PM_WS_MARKET
+    http_url: str = HTTP_URL
+    ws_url: str = WS_MARKET_URL
     api_key: str = ""
     api_secret: str = ""
     api_passphrase: str = ""
@@ -42,13 +45,13 @@ class PolymarketDataClientConfig(LiveDataClientConfig, frozen=True):
 class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):
     """Config for Polymarket execution client (REST + user-channel WS)."""
 
-    http_url: str = "https://clob.polymarket.com"
-    ws_url: str = _PM_WS_USER
+    http_url: str = HTTP_URL
+    ws_url: str = WS_USER_URL
     api_key: str = ""
     api_secret: str = ""
     api_passphrase: str = ""
     private_key: str = ""
-    exchange_address: str = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+    exchange_address: str = EXCHANGE_ADDRESS
     is_paper: bool = True
 
 

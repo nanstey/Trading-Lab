@@ -10,7 +10,7 @@ verifies complete.
 
 **What it is:** An algorithmic trading system built on NautilusTrader targeting:
 - **Polymarket** — binary prediction markets (primary venue, complement arb strategy)
-- **Hyperliquid** — perpetual futures DEX (secondary, for hedging — not yet wired)
+- **Hyperliquid** — perpetual futures DEX (secondary). Paper + testnet wired via `HyperliquidPaperFillEngine` and `HyperliquidRunner`; mainnet gated behind the live triple-gate. `hl-smoke` is the integration-only smoke hypothesis — no real edge strategy yet.
 
 **Primary strategy:** Complement arbitrage on Polymarket binary markets. In
 binary markets YES + NO shares must resolve to exactly $1.00. When the
@@ -34,9 +34,9 @@ external agent runtime can drive a runbook. No `anthropic` SDK dependency.
 |--------|---------|
 | `src/trading_lab/config.py` | Single source of truth. Loads `.env` (secrets) + `config/system.yaml` + `config/venues.yaml` + `config/portfolio.yaml`. Use `load_config()`. New paths: `cfg.venues.polymarket.http_url`, `cfg.portfolio.risk.daily_loss_limit_usdc`, `cfg.system.watcher.single_day_limit_pct`. Legacy compat properties (`cfg.polymarket.host`, `cfg.risk.daily_loss_limit_usdc`) preserved. **No `trading_mode` / `TRADING_MODE`** — paper-vs-live is per-strategy via hypothesis state. |
 | `config/system.yaml` | Log level, watcher thresholds, heartbeat timeout, budget caps. Committed. |
-| `config/venues.yaml` | Polymarket + Hyperliquid + Polygon endpoints + contract addresses. Constants. |
+| `config/venues.yaml` | Polymarket + Hyperliquid (mainnet/testnet) + Polygon endpoints + contract addresses. Constants. HL block has nested `mainnet:` / `testnet:` / `default_network:`; access via `cfg.venues.hyperliquid.active(network)`. |
 | `config/portfolio.yaml` | Risk envelope + per-strategy capital allocations (`allocations:` map, enforced by `agent/portfolio.py`). |
-| `.env` | **Secrets only**. `POLY_PRIVATE_KEY`, `POLY_API_KEY/SECRET/PASSPHRASE`, `HL_PRIVATE_KEY/ACCOUNT_ADDRESS`, `LIVE_TRADING_CONFIRMED`. Gitignored. |
+| `.env` | **Secrets only**. `POLY_PRIVATE_KEY`, `POLY_API_KEY/SECRET/PASSPHRASE`, `HL_PRIVATE_KEY/ACCOUNT_ADDRESS` (mainnet), `HL_TESTNET_PRIVATE_KEY/ACCOUNT_ADDRESS` (testnet — distinct wallet), `LIVE_TRADING_CONFIRMED`. Gitignored. |
 | `src/trading_lab/node.py` | Legacy `build_node(is_paper)` factory. Superseded — modern runners build their own TradingNode inline. |
 | `src/trading_lab/main.py` | Stub — prints pointers to `scripts/paper_run_v2.py` etc. The old `--mode paper/live` flag has no behaviour beyond informational. |
 
@@ -63,7 +63,9 @@ external agent runtime can drive a runbook. No `anthropic` SDK dependency.
 | `src/trading_lab/venues/polymarket/gamma.py` | `GammaClient` — public metadata API (`gamma-api.polymarket.com`). |
 | `src/trading_lab/venues/polymarket/data.py`, `execution.py`, `factory.py` | NT `LiveMarketDataClient` / `LiveExecutionClient` scaffolding. NOT wired into PaperRunner yet (PaperRunner bypasses NT TradingNode for now). |
 | `src/trading_lab/venues/polymarket/orders.py` | Order-build helpers (EIP-712 limit order signing). |
-| `src/trading_lab/venues/hyperliquid/` | Hyperliquid adapter scaffolding — not wired into any active strategy. |
+| `src/trading_lab/venues/hyperliquid/` | Hyperliquid adapter: REST + WS client, EIP-712 auth, NT data/exec clients, factory (`HyperliquidDataClientConfig` / `HyperliquidExecClientConfig`), `HyperliquidPaperFillEngine` (paper fills against the live book), `make_hl_perpetual()` instrument helper. |
+| `src/trading_lab/runner/hl_v2.py` | `HyperliquidRunner` — TradingNode-driven runner for HL paper / testnet / mainnet. Mirrors `PaperRunnerV2` / `LiveRunner`. |
+| `src/trading_lab/strategies/hl_smoke.py` | `HLSmokeStrategy` — plumbing-only quote-pair strategy used by `hl-smoke` to validate the HL paper + testnet pipeline. No edge claim; never promote past `LIVE_READY`. |
 
 ### Risk
 | Module | Purpose |
@@ -227,11 +229,17 @@ make sync-markets-full              # full sync (slower)
 | Polymarket market WS | `cfg.venues.polymarket.ws_market_url` | `config/venues.yaml` |
 | Polymarket user WS | `cfg.venues.polymarket.ws_user_url` | `config/venues.yaml` |
 | Polymarket exchange addr | `cfg.venues.polymarket.exchange_address` | `config/venues.yaml` |
-| Hyperliquid API | `cfg.venues.hyperliquid.api_url` | `config/venues.yaml` |
+| Hyperliquid API (default network) | `cfg.venues.hyperliquid.api_url` | `config/venues.yaml` |
+| Hyperliquid mainnet endpoints | `cfg.venues.hyperliquid.mainnet.{api_url,ws_url}` | `config/venues.yaml` |
+| Hyperliquid testnet endpoints | `cfg.venues.hyperliquid.testnet.{api_url,ws_url}` | `config/venues.yaml` |
+| Hyperliquid active endpoints | `cfg.venues.hyperliquid.active("mainnet"\|"testnet")` | `config/venues.yaml` |
+| Hyperliquid taker fee (paper) | `cfg.portfolio.hyperliquid_fees.taker_bps` | `config/portfolio.yaml` |
 | Polygon RPC | `cfg.venues.polygon.rpc_url` | `config/venues.yaml` |
 | Polymarket L1 key | `cfg.polymarket_secrets.private_key` | `.env` (`POLY_PRIVATE_KEY`) |
 | Polymarket L2 creds | `cfg.polymarket_secrets.api_key/secret/passphrase` | `.env` (`POLY_*`) |
-| Hyperliquid L1 key | `cfg.hyperliquid_secrets.private_key` | `.env` (`HL_PRIVATE_KEY`) |
+| Hyperliquid mainnet key | `cfg.hyperliquid_secrets.private_key` | `.env` (`HL_PRIVATE_KEY`) |
+| Hyperliquid testnet key | `cfg.hyperliquid_secrets.testnet_private_key` | `.env` (`HL_TESTNET_PRIVATE_KEY`) |
+| Hyperliquid per-network key | `cfg.hyperliquid_secrets.network_private_key("mainnet"\|"testnet")` | `.env` |
 | Daily loss limit | `cfg.portfolio.risk.daily_loss_limit_usdc` | `config/portfolio.yaml` |
 | Max position USDC (per market) | `cfg.portfolio.risk.max_position_usdc` | `config/portfolio.yaml` |
 | Total exposure envelope | `cfg.portfolio.risk.max_total_exposure_usdc` | `config/portfolio.yaml` |

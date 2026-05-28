@@ -60,6 +60,11 @@ class HyperliquidExecutionClient(LiveExecutionClient):
         self._is_paper = is_paper
         self._order_id_map: dict[str, int] = {}   # client_order_id → HL oid
 
+        # Paper-mode: a `HyperliquidPaperFillEngine` actor is registered
+        # with the trading node and we delegate fill simulation to it. The
+        # runner sets this attribute after constructing both components.
+        self._paper_fill_engine: Any = None
+
     async def _connect(self) -> None:
         log.info("HyperliquidExecutionClient connecting", paper=self._is_paper)
 
@@ -78,7 +83,19 @@ class HyperliquidExecutionClient(LiveExecutionClient):
         self._send_order_submitted(order)
 
         if self._is_paper:
-            self._send_order_accepted(order, VenueOrderId("PAPER-" + str(order.client_order_id)))
+            # Paper mode — acknowledge immediately and hand the order to
+            # the paper-fill engine. The engine watches live book updates
+            # and emits OrderFilled / OrderCanceled events via the same
+            # msgbus topic the real venue path uses, so the strategy can't
+            # tell paper from live just by event flow.
+            self._send_order_accepted(
+                order, VenueOrderId("PAPER-" + str(order.client_order_id))
+            )
+            if self._paper_fill_engine is not None:
+                try:
+                    self._paper_fill_engine.register_pending(order)
+                except Exception as exc:
+                    log.warning("hl-paper-fill register failed", error=str(exc))
             return
 
         try:
@@ -107,6 +124,14 @@ class HyperliquidExecutionClient(LiveExecutionClient):
 
     async def _cancel_order(self, command: CancelOrder) -> None:
         if self._is_paper:
+            if self._paper_fill_engine is not None:
+                try:
+                    self._paper_fill_engine.cancel_pending(
+                        str(command.client_order_id)
+                    )
+                    return
+                except Exception as exc:
+                    log.warning("hl-paper-fill cancel failed", error=str(exc))
             self._send_order_canceled(command)
             return
 

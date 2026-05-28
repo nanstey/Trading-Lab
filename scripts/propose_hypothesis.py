@@ -67,6 +67,16 @@ def main() -> int:
     state = args.initial_state or fm.get("state") or lifecycle.State.PROPOSED.value
     summary = body.split("\n\n", 1)[0][:500]  # first paragraph as quick summary
 
+    # Venue lives at the top of the frontmatter (default: polymarket). For
+    # downstream consumers we tuck it into `market_criteria` so we don't
+    # need a schema migration on the hypothesis table.
+    market_criteria = dict(fm.get("market_criteria") or {})
+    venue = (fm.get("venue") or market_criteria.get("venue") or "polymarket").lower()
+    if venue not in ("polymarket", "hyperliquid"):
+        print(json.dumps({"ok": False, "error": f"unknown venue: {venue!r}"}))
+        return 2
+    market_criteria["venue"] = venue
+
     h = lifecycle.add_hypothesis(
         slug=slug,
         state=state,
@@ -74,7 +84,7 @@ def main() -> int:
         source_type=fm.get("source") or "manual",
         summary=summary,
         parent_slug=fm.get("parent_slug"),
-        market_criteria=fm.get("market_criteria") or {},
+        market_criteria=market_criteria,
         strategy_module=fm.get("strategy_module") or "",
         strategy_class=fm.get("strategy_class") or "",
         strategy_config_class=fm.get("strategy_config_class") or "",
