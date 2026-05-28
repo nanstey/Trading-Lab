@@ -255,7 +255,7 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
         report.add(check_package_installed(pkg, import_name))
 
     # Config files (YAML — committed to git)
-    for yaml_name in ("system.yaml", "venues.yaml", "portfolio.yaml"):
+    for yaml_name in ("system.yaml", "portfolio.yaml"):
         path = Path("config") / yaml_name
         report.add(CheckResult(
             name=f"config/{yaml_name}",
@@ -263,13 +263,13 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
             value="present" if path.exists() else "MISSING",
         ))
 
-    # Polymarket credentials (secrets only — endpoints come from venues.yaml)
+    # Polymarket credentials (secrets only — endpoint URLs are code constants)
     report.add(check_env_var("POLY_PRIVATE_KEY", required=False, sensitive=True))
     report.add(check_env_var("POLY_API_KEY", required=False, sensitive=True))
     report.add(check_env_var("POLY_API_SECRET", required=False, sensitive=True))
     report.add(check_env_var("POLY_API_PASSPHRASE", required=False, sensitive=True))
 
-    # Surface the venue endpoint we'll actually use (read from venues.yaml).
+    # Surface the venue endpoint we'll actually use (defined in venues.<v>.endpoints).
     try:
         from trading_lab.config import load_config
         _cfg = load_config()
@@ -328,10 +328,9 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
     # Connectivity checks
     if not args.no_connectivity:
         print("Checking API connectivity...")
-        # Read endpoints from venues.yaml via load_config — see the config
-        # block above.
-        poly_host = _cfg.venues.polymarket.http_url if "_cfg" in dir() else \
-            "https://clob.polymarket.com"
+        # Read endpoints from load_config (sourced from venues.<v>.endpoints).
+        from trading_lab.venues.polymarket.endpoints import HTTP_URL as PM_HTTP_URL
+        poly_host = _cfg.venues.polymarket.http_url if "_cfg" in dir() else PM_HTTP_URL
         report.add(await check_polymarket_connectivity(poly_host))
 
         # Hyperliquid: ping the requested network. If both wallet keys are
@@ -345,8 +344,9 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
             poly_secrets = None
 
         if hl is None:
+            from trading_lab.venues.hyperliquid.endpoints import MAINNET_HTTP_URL
             report.add(await check_hyperliquid_connectivity(
-                "https://api.hyperliquid.xyz", network="mainnet",
+                MAINNET_HTTP_URL, network="mainnet",
             ))
         else:
             networks: list[str] = []

@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from trading_lab.config import TradingConfig
+from trading_lab.venues.polymarket.endpoints import WS_MARKET_URL
 
 log = logging.getLogger(__name__)
 
@@ -283,7 +284,7 @@ class GenericPaperRunner:
     async def _stream_market(self, token_ids, strategy, kill_switch) -> None:
         import websockets
 
-        url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+        url = WS_MARKET_URL
         sub = {"type": "market", "assets_ids": token_ids}
         backoff = 2.0
         while not self._stop.is_set():

@@ -19,10 +19,8 @@ from nautilus_trader.live.factories import LiveDataClientFactory, LiveExecClient
 
 from trading_lab.venues.hyperliquid.client import HyperliquidRestClient, HyperliquidWsClient
 from trading_lab.venues.hyperliquid.data import HyperliquidDataClient
+from trading_lab.venues.hyperliquid.endpoints import MAINNET_HTTP_URL, MAINNET_WS_URL
 from trading_lab.venues.hyperliquid.execution import HyperliquidExecutionClient
-
-_HL_MAINNET_HTTP = "https://api.hyperliquid.xyz"
-_HL_MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
 
 # Dummy key — the HL REST client requires a private_key at construction
 # to derive an address, but in paper mode it is never used for signing.
@@ -33,8 +31,8 @@ _DUMMY_PAPER_KEY = "0x" + "11" * 32
 class HyperliquidDataClientConfig(LiveDataClientConfig, frozen=True):
     """Config for Hyperliquid data client (market WS + REST info)."""
 
-    http_url: str = _HL_MAINNET_HTTP
-    ws_url: str = _HL_MAINNET_WS
+    http_url: str = MAINNET_HTTP_URL
+    ws_url: str = MAINNET_WS_URL
     private_key: str = ""
     account_address: str = ""
 
@@ -42,8 +40,8 @@ class HyperliquidDataClientConfig(LiveDataClientConfig, frozen=True):
 class HyperliquidExecClientConfig(LiveExecClientConfig, frozen=True):
     """Config for Hyperliquid execution client (REST exchange + user WS)."""
 
-    http_url: str = _HL_MAINNET_HTTP
-    ws_url: str = _HL_MAINNET_WS
+    http_url: str = MAINNET_HTTP_URL
+    ws_url: str = MAINNET_WS_URL
     private_key: str = ""
     account_address: str = ""
     is_paper: bool = True
@@ -73,12 +71,12 @@ class HyperliquidLiveDataClientFactory(LiveDataClientFactory):
         # key. Fall back to a dummy when unset.
         pk = _cfg_get(config, "private_key", "") or _DUMMY_PAPER_KEY
         rest = HyperliquidRestClient(
-            http_url=_cfg_get(config, "http_url", _HL_MAINNET_HTTP),
+            http_url=_cfg_get(config, "http_url", MAINNET_HTTP_URL),
             private_key=pk,
             account_address=_cfg_get(config, "account_address", ""),
         )
         ws = HyperliquidWsClient(
-            ws_url=_cfg_get(config, "ws_url", _HL_MAINNET_WS),
+            ws_url=_cfg_get(config, "ws_url", MAINNET_WS_URL),
             on_message=lambda msg: None,
         )
         client = HyperliquidDataClient(
@@ -115,12 +113,12 @@ class HyperliquidLiveExecClientFactory(LiveExecClientFactory):
                     "HL_TESTNET_PRIVATE_KEY (testnet) in .env."
                 )
         rest = HyperliquidRestClient(
-            http_url=_cfg_get(config, "http_url", _HL_MAINNET_HTTP),
+            http_url=_cfg_get(config, "http_url", MAINNET_HTTP_URL),
             private_key=pk,
             account_address=_cfg_get(config, "account_address", ""),
         )
         ws = HyperliquidWsClient(
-            ws_url=_cfg_get(config, "ws_url", _HL_MAINNET_WS),
+            ws_url=_cfg_get(config, "ws_url", MAINNET_WS_URL),
             on_message=lambda msg: None,
         )
         client = HyperliquidExecutionClient(

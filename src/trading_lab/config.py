@@ -7,10 +7,11 @@ Three sources, merged at load time:
      L2 API credentials, `LIVE_TRADING_CONFIRMED` security gate.
   2. **`config/system.yaml`** — log level, watcher thresholds, heartbeat
      timeout, budget caps. Tunable.
-  3. **`config/venues.yaml`** — endpoint URLs + on-chain contract addresses.
-     Constants; only change for testnet / chain migration.
-  4. **`config/portfolio.yaml`** — risk envelope + (future) per-strategy
+  3. **`config/portfolio.yaml`** — risk envelope + (future) per-strategy
      capital allocations.
+
+Venue endpoint URLs and on-chain contract addresses live in
+`trading_lab.venues.{polymarket,hyperliquid}.endpoints` as constants.
 
 Strategy params are NOT system config — they live in the hypothesis
 frontmatter (defaults from `*Config(StrategyConfig)` class) plus the
@@ -35,13 +36,27 @@ import yaml
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from trading_lab.venues.hyperliquid.endpoints import (
+    MAINNET_HTTP_URL as HL_MAINNET_HTTP_URL,
+    MAINNET_WS_URL as HL_MAINNET_WS_URL,
+    TESTNET_HTTP_URL as HL_TESTNET_HTTP_URL,
+    TESTNET_WS_URL as HL_TESTNET_WS_URL,
+)
+from trading_lab.venues.polymarket.endpoints import (
+    CTF_ADDRESS as PM_CTF_ADDRESS,
+    EXCHANGE_ADDRESS as PM_EXCHANGE_ADDRESS,
+    HTTP_URL as PM_HTTP_URL,
+    WS_MARKET_URL as PM_WS_MARKET_URL,
+    WS_USER_URL as PM_WS_USER_URL,
+)
+
 # ---------------------------------------------------------------------------
 # Secrets (.env)
 # ---------------------------------------------------------------------------
 
 
 class PolymarketSecrets(BaseSettings):
-    """Polymarket credentials only — endpoints come from venues.yaml."""
+    """Polymarket credentials only — endpoints live in venues.polymarket.endpoints."""
 
     model_config = SettingsConfigDict(env_prefix="POLY_", extra="ignore")
 
@@ -163,15 +178,9 @@ class HyperliquidVenue:
 
 
 @dataclass(frozen=True)
-class PolygonVenue:
-    rpc_url: str
-
-
-@dataclass(frozen=True)
 class VenuesConfig:
     polymarket: PolymarketVenue
     hyperliquid: HyperliquidVenue
-    polygon: PolygonVenue
 
 
 @dataclass(frozen=True)
@@ -434,7 +443,6 @@ def load_config() -> TradingConfig:
     hyperliquid_secrets = HyperliquidSecrets()
 
     sys_yaml = _load_yaml("system.yaml")
-    venues_yaml = _load_yaml("venues.yaml")
     portfolio_yaml = _load_yaml("portfolio.yaml")
 
     system = SystemConfig(
@@ -444,33 +452,19 @@ def load_config() -> TradingConfig:
         budget=BudgetConfig(**sys_yaml.get("budget", {})),
     )
 
-    hl_yaml = venues_yaml.get("hyperliquid", {}) or {}
-    if "mainnet" in hl_yaml or "testnet" in hl_yaml:
-        hl_venue = HyperliquidVenue(
-            mainnet=HyperliquidNetwork(**hl_yaml.get("mainnet", {})),
-            testnet=HyperliquidNetwork(**hl_yaml.get("testnet", {})),
-            default_network=hl_yaml.get("default_network", "mainnet"),
-        )
-    else:
-        # Legacy flat form (api_url / ws_url at top level). Promote it to
-        # mainnet and synthesize a testnet block from the public defaults.
-        hl_venue = HyperliquidVenue(
-            mainnet=HyperliquidNetwork(
-                api_url=hl_yaml.get("api_url", "https://api.hyperliquid.xyz"),
-                ws_url=hl_yaml.get("ws_url", "wss://api.hyperliquid.xyz/ws"),
-            ),
-            testnet=HyperliquidNetwork(
-                api_url="https://api.hyperliquid-testnet.xyz",
-                ws_url="wss://api.hyperliquid-testnet.xyz/ws",
-            ),
-            default_network="mainnet",
-        )
-
-    venues = VenuesConfig(
-        polymarket=PolymarketVenue(**venues_yaml.get("polymarket", {})),
-        hyperliquid=hl_venue,
-        polygon=PolygonVenue(**venues_yaml.get("polygon", {})),
+    pm_venue = PolymarketVenue(
+        http_url=PM_HTTP_URL,
+        ws_market_url=PM_WS_MARKET_URL,
+        ws_user_url=PM_WS_USER_URL,
+        ctf_address=PM_CTF_ADDRESS,
+        exchange_address=PM_EXCHANGE_ADDRESS,
     )
+    hl_venue = HyperliquidVenue(
+        mainnet=HyperliquidNetwork(api_url=HL_MAINNET_HTTP_URL, ws_url=HL_MAINNET_WS_URL),
+        testnet=HyperliquidNetwork(api_url=HL_TESTNET_HTTP_URL, ws_url=HL_TESTNET_WS_URL),
+    )
+
+    venues = VenuesConfig(polymarket=pm_venue, hyperliquid=hl_venue)
 
     portfolio = PortfolioConfig(
         risk=RiskConfig(**portfolio_yaml.get("risk", {})),

@@ -29,6 +29,7 @@ load_dotenv()
 
 async def main() -> None:
     from trading_lab.venues.polymarket.auth import derive_address, derive_api_key
+    from trading_lab.venues.polymarket.endpoints import HTTP_URL
 
     private_key = os.environ.get("POLY_PRIVATE_KEY")
     if not private_key:
@@ -42,7 +43,7 @@ async def main() -> None:
     print(f"Wallet address: {address}")
     print("Deriving L2 credentials via /auth/derive-api-key ...")
 
-    http_url = os.environ.get("POLY_HTTP_URL", "https://clob.polymarket.com")
+    http_url = os.environ.get("POLY_HTTP_URL", HTTP_URL)
 
     creds = await derive_api_key(
         http_url=http_url,

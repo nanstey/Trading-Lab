@@ -37,17 +37,6 @@ def yaml_config_dir(tmp_path, monkeypatch):
             "live_starts_per_day": 0,
         },
     }))
-    (cfg_dir / "venues.yaml").write_text(yaml.safe_dump({
-        "polymarket": {
-            "http_url": "https://clob.polymarket.com",
-            "ws_market_url": "wss://test/market",
-            "ws_user_url": "wss://test/user",
-            "ctf_address": "0xCtf",
-            "exchange_address": "0xExch",
-        },
-        "hyperliquid": {"api_url": "https://hl/api", "ws_url": "wss://hl/ws"},
-        "polygon": {"rpc_url": "https://polygon-rpc.example"},
-    }))
     (cfg_dir / "portfolio.yaml").write_text(yaml.safe_dump({
         "risk": {
             "max_position_usdc": 100.0,
@@ -96,21 +85,28 @@ class TestHyperliquidSecrets:
 class TestLoadConfig:
     def test_loads_yaml(self, yaml_config_dir):
         cfg = load_config()
-        assert cfg.venues.polymarket.http_url == "https://clob.polymarket.com"
+        # Venue endpoints come from code constants, not yaml.
+        from trading_lab.venues.polymarket.endpoints import HTTP_URL as PM_HTTP_URL
+        assert cfg.venues.polymarket.http_url == PM_HTTP_URL
         assert cfg.portfolio.risk.daily_loss_limit_usdc == -200.0
         assert cfg.system.watcher.single_day_limit_pct == 5
         assert cfg.system.budget.backtests_per_day == 50
 
     def test_legacy_compat_accessors(self, yaml_config_dir):
         cfg = load_config()
+        from trading_lab.venues.polymarket.endpoints import (
+            HTTP_URL as PM_HTTP_URL,
+            WS_MARKET_URL,
+            WS_USER_URL,
+        )
         # Old call sites use cfg.polymarket.host / cfg.risk.daily_loss_limit_usdc
-        assert cfg.polymarket.host == "https://clob.polymarket.com"
+        assert cfg.polymarket.host == PM_HTTP_URL
         assert cfg.risk.daily_loss_limit_usdc == -200.0
         assert cfg.risk.heartbeat_timeout_secs == 10
         # ws_host returns market url for legacy paths
-        assert cfg.polymarket.ws_host == "wss://test/market"
-        assert cfg.polymarket.ws_market_url == "wss://test/market"
-        assert cfg.polymarket.ws_user_url == "wss://test/user"
+        assert cfg.polymarket.ws_host == WS_MARKET_URL
+        assert cfg.polymarket.ws_market_url == WS_MARKET_URL
+        assert cfg.polymarket.ws_user_url == WS_USER_URL
 
     def test_log_level_property(self, yaml_config_dir):
         cfg = load_config()

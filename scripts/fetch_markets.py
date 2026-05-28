@@ -36,6 +36,7 @@ async def main() -> None:
 
     from trading_lab.venues.polymarket.auth import L2Credentials
     from trading_lab.venues.polymarket.client import PolymarketRestClient
+    from trading_lab.venues.polymarket.endpoints import HTTP_URL
 
     args = parse_args()
 
@@ -45,7 +46,7 @@ async def main() -> None:
         api_passphrase=os.environ.get("POLY_API_PASSPHRASE", ""),
     )
 
-    http_url = os.environ.get("POLY_HTTP_URL", "https://clob.polymarket.com")
+    http_url = os.environ.get("POLY_HTTP_URL", HTTP_URL)
     client = PolymarketRestClient(http_url=http_url, creds=creds)
 
     try:

@@ -36,10 +36,11 @@ if TYPE_CHECKING:
     from trading_lab.data.catalog import DataCatalog
     from trading_lab.venues.polymarket.client import PolymarketRestClient
 
+from trading_lab.venues.polymarket.endpoints import HTTP_URL as CLOB_BASE, WS_MARKET_URL
+
 log = logging.getLogger(__name__)
 
 DATA_API_BASE = "https://data-api.polymarket.com"
-CLOB_BASE = "https://clob.polymarket.com"
 
 
 class PolymarketDataIngester:
@@ -321,7 +322,7 @@ class PolymarketDataIngester:
             creds = L2Credentials(api_key="", api_secret="", api_passphrase="")
 
         ws = PolymarketWsClient(
-            ws_url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
+            ws_url=WS_MARKET_URL,
             creds=creds,
             on_message=lambda m: asyncio.create_task(self._on_market_message(m)),
         )
