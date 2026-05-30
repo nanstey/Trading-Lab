@@ -75,7 +75,10 @@ def _resolve_coins(args: argparse.Namespace, catalog: HyperliquidCatalog) -> lis
     if args.coins:
         return [c.strip().upper() for c in args.coins.split(",") if c.strip()]
     # hypothesis path: load universe at --universe-as-of or --end
-    as_of_date = datetime.strptime(args.universe_as_of or args.end, "%Y-%m-%d").replace(tzinfo=UTC)
+    as_of_raw = args.universe_as_of or args.end
+    if hasattr(as_of_raw, "isoformat"):
+        as_of_raw = as_of_raw.isoformat()
+    as_of_date = datetime.strptime(str(as_of_raw), "%Y-%m-%d").replace(tzinfo=UTC)
     universe = load_universe(catalog, as_of_date)
     if not universe:
         raise SystemExit("No universe snapshot — run scripts/refresh_hl_universe.py first.")
