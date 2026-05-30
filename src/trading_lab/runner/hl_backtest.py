@@ -302,8 +302,13 @@ class HyperliquidBacktestRunner:
         if "filled_qty" in orders_df.columns:
             n_fills = int((pd.to_numeric(orders_df["filled_qty"], errors="coerce").fillna(0) > 0).sum())
 
-        # Equity curve from NT account report (USDC balance at each tick).
+        # Equity curve from NT account report (USDC balance at each tick),
+        # resampled to bar cadence so per-bar returns drive annualisation
+        # in `combine_metrics`. Without this, sparse fill-time samples
+        # combined with high periods_per_year inflate Sharpe in absolute
+        # value (large positive or negative depending on direction).
         equity = _equity_curve_from_account(account_df, initial_capital)
+        equity = _resample_equity_to_bars(equity, bar_interval, window_start, window_end)
 
         # Per-trade realised PnL (one entry per closed position).
         per_trade = _per_trade_pnl_from_positions(positions_df)
@@ -521,6 +526,46 @@ def _per_trade_pnl_from_positions(positions_df: pd.DataFrame) -> list[float]:
     ]
 
 
+_BAR_FREQ: dict[str, str] = {
+    "1m": "1min", "5m": "5min", "15m": "15min",
+    "1h": "1h", "4h": "4h", "1d": "1D",
+}
+
+
+def _resample_equity_to_bars(
+    equity: pd.Series,
+    bar_interval: str,
+    window_start: datetime,
+    window_end: datetime,
+) -> pd.Series:
+    """Reindex equity onto a regular bar grid so annualisation matches."""
+    if equity.empty:
+        return equity
+    freq = _BAR_FREQ.get(bar_interval, "1h")
+    if not isinstance(equity.index, pd.DatetimeIndex):
+        return equity
+    # Build the bar grid clipped to actual range present.
+    ws = pd.Timestamp(window_start)
+    we = pd.Timestamp(window_end)
+    if ws.tzinfo is None:
+        ws = ws.tz_localize("UTC")
+    else:
+        ws = ws.tz_convert("UTC")
+    if we.tzinfo is None:
+        we = we.tz_localize("UTC")
+    else:
+        we = we.tz_convert("UTC")
+    start = max(ws, equity.index[0])
+    end = min(we, equity.index[-1])
+    if end <= start:
+        return equity
+    grid = pd.date_range(start=start, end=end, freq=freq, tz="UTC")
+    # Dedupe duplicate index entries (NT can emit ts collisions).
+    eq = equity[~equity.index.duplicated(keep="last")].sort_index()
+    out = eq.reindex(eq.index.union(grid)).sort_index().ffill().reindex(grid).ffill().bfill()
+    return out.astype(float)
+
+
 def _strip_currency(v: Any) -> float:
     """NT reports often pack 'value CCY' strings; strip the currency suffix."""
     if isinstance(v, (int, float)):
@@ -697,6 +742,9 @@ def _aggregate_portfolio(
             # Distribute as n copies of expectancy. Not exact, but stable.
             all_trades.extend([m.metrics.expectancy] * n)
 
+    # Portfolio total pnl = terminal equity - initial. Equal-weight aggregation.
+    terminal = float(portfolio_equity.iloc[-1]) if not portfolio_equity.empty else initial_capital_per_market
+    total_pnl = (terminal - initial_capital_per_market) * len(valid)
     portfolio_metrics = combine_metrics(
         per_trade_pnl=all_trades,
         equity_curve=portfolio_equity,
@@ -712,6 +760,8 @@ def _aggregate_portfolio(
             "mean_per_market_sharpe": float(
                 np.mean([m.metrics.sharpe for m in valid]) if valid else 0.0
             ),
+            "terminal_equity": terminal,
+            "total_pnl": total_pnl,
         },
     )
     return HLPortfolioResult(
