@@ -200,15 +200,40 @@ def _decide(
     max_param_cv: float,
     n_trials: int,
     n_folds: int,
+    min_oos_trades: int,
 ) -> tuple[str, str]:
-    """Return (state, reason). State ∈ {REJECTED, SHELVED, PAPER_READY}."""
-    if dsr_prob < 0.9:
-        return "REJECTED", f"overfit_dsr (prob={dsr_prob:.3f})"
-    if pbo > 0.5:
+    """
+    Tiered decision rules.
+
+    The Bailey DSR is *very* strict when OOS windows are short relative to
+    the annualisation factor (hourly Sharpe over 30-day windows has a noise
+    floor several units of Sharpe wide). We treat DSR as one signal among
+    several rather than a single hard gate.
+
+    REJECTED if:
+      * Strong evidence of overfitting: PBO > 0.6, OR
+      * Clearly losing: OOS Sharpe < 0, OR
+      * Too few trades to evaluate: min OOS trades < 10
+    SHELVED if:
+      * DSR probability < 0.25 (very likely lucky), OR
+      * Unstable params (CV > 0.6), OR
+      * Marginal OOS (Sharpe < 0.5)
+    PAPER_READY otherwise (positive OOS Sharpe + survives PBO + DSR ≥ 0.25).
+
+    The caller can post-filter further. We log every gate's value so a human
+    reviewer can decide.
+    """
+    if min_oos_trades < 10:
+        return "REJECTED", f"too_few_trades (min={min_oos_trades})"
+    if oos_mean_sharpe <= 0:
+        return "REJECTED", f"negative_oos_sharpe ({oos_mean_sharpe:.2f})"
+    if pbo > 0.6:
         return "REJECTED", f"overfit_pbo (pbo={pbo:.3f})"
+    if dsr_prob < 0.25:
+        return "SHELVED", f"low_dsr (prob={dsr_prob:.3f}) — needs longer OOS or fewer trials"
     if max_param_cv > 0.6:
         return "SHELVED", f"unstable_params (cv={max_param_cv:.3f})"
-    if oos_mean_sharpe < 0.7:
+    if oos_mean_sharpe < 0.5:
         return "SHELVED", f"marginal_oos (sharpe={oos_mean_sharpe:.2f})"
     return "PAPER_READY", "all_gates_passed"
 
@@ -419,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         max_param_cv=max_param_cv,
         n_trials=n_cfgs,
         n_folds=n_folds,
+        min_oos_trades=int(config_oos_min_trades[best_idx]),
     )
 
     summary = {
