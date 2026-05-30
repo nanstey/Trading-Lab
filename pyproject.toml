@@ -14,34 +14,29 @@ authors = [{ name = "Trading Lab" }]
 dependencies = [
     # Core trading engine
     "nautilus_trader>=1.208.0",
-
     # Ethereum / Web3 (Polymarket L1 auth, EIP-712, Polygon settlement)
     "web3>=7.0.0",
     "eth-account>=0.13.0",
-
     # HTTP + async WebSocket
     "aiohttp>=3.10.0",
     "websockets>=13.0",
-
     # Config & validation
     "pydantic>=2.8.0",
     "pydantic-settings>=2.4.0",
     "python-dotenv>=1.0.0",
-
     # Data serialization
     "pyarrow>=17.0.0",
     "pandas>=2.2.0",
-
+    # Numerical / research
+    "numpy>=2.0.0",
+    "scipy>=1.13.0",
     # Utilities
     "structlog>=24.4.0",
     "cryptography>=43.0.0",
-
     # YAML for hypothesis frontmatter + sources.yaml
     "PyYAML>=6.0",
-
     # RSS / Atom feed parsing for discovery sources
     "feedparser>=6.0.0",
-
     # YouTube transcripts for strategy idea capture
     "youtube-transcript-api>=0.6.2",
 ]
