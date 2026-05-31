@@ -77,6 +77,7 @@ help:
 	@echo "  make sync-markets-full                             Including closed/archived"
 	@echo "  make download-data CONDITION_ID=0x... [START=...] [END=...]"
 	@echo "  make hl-capture-daily [TOP_N=20] [INTERVALS=5m,1h,1d] [COINS=BTC,ETH]"
+	@echo "  make hl-capture-daily-commit [TOP_N=20]              Capture HL archive and auto-commit data/parquet/hyperliquid"
 	@echo "  make data-ingest [SLUGS=a,b] [DURATION_SECS=...]   Continuous WS daemon"
 	@echo "  make rolling-eval [WINDOW_DAYS=2] [STATES=PAPER,OPTIMIZE]"
 	@echo ""
@@ -386,6 +387,18 @@ hl-capture-daily: ## Incremental HL daily capture: universe snapshot + trailing 
 	    $(if $(COINS),--coins $(COINS),) \
 	    $(if $(INTERVALS),--intervals $(INTERVALS),) \
 	    $(if $(CONCURRENCY),--concurrency $(CONCURRENCY),)
+
+.PHONY: hl-capture-daily-commit
+hl-capture-daily-commit: ## Run HL daily capture and auto-commit generated archive files
+	$(PYTHON) $(SCRIPTS)/capture_hyperliquid_daily.py \
+	    $(if $(AS_OF),--as-of $(AS_OF),) \
+	    $(if $(TOP_N),--top-n $(TOP_N),) \
+	    $(if $(COINS),--coins $(COINS),) \
+	    $(if $(INTERVALS),--intervals $(INTERVALS),) \
+	    $(if $(CONCURRENCY),--concurrency $(CONCURRENCY),)
+	$(PYTHON) $(SCRIPTS)/commit_repo_changes.py --force \
+	    --paths data/parquet/hyperliquid \
+	    --message "chore(data): update hyperliquid daily archive"
 
 .PHONY: data-ingest
 data-ingest: ## Continuous data ingestion daemon (long-lived; SIGINT to stop)
