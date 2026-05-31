@@ -76,6 +76,7 @@ help:
 	@echo "  make sync-markets                                  Gamma → market_catalog.db"
 	@echo "  make sync-markets-full                             Including closed/archived"
 	@echo "  make download-data CONDITION_ID=0x... [START=...] [END=...]"
+	@echo "  make hl-capture-daily [TOP_N=20] [INTERVALS=5m,1h,1d] [COINS=BTC,ETH]"
 	@echo "  make data-ingest [SLUGS=a,b] [DURATION_SECS=...]   Continuous WS daemon"
 	@echo "  make rolling-eval [WINDOW_DAYS=2] [STATES=PAPER,OPTIMIZE]"
 	@echo ""
@@ -376,6 +377,15 @@ live-hl: ## Run HL hypothesis against MAINNET (real money — requires triple-ga
 	$(PYTHON) $(SCRIPTS)/live_run.py --venue hyperliquid --slug $(HYPOTHESIS) \
 	    --i-understand-this-is-live \
 	    $(if $(DURATION_SECS),--duration-secs $(DURATION_SECS),)
+
+.PHONY: hl-capture-daily
+hl-capture-daily: ## Incremental HL daily capture: universe snapshot + trailing candles/funding
+	$(PYTHON) $(SCRIPTS)/capture_hyperliquid_daily.py \
+	    $(if $(AS_OF),--as-of $(AS_OF),) \
+	    $(if $(TOP_N),--top-n $(TOP_N),) \
+	    $(if $(COINS),--coins $(COINS),) \
+	    $(if $(INTERVALS),--intervals $(INTERVALS),) \
+	    $(if $(CONCURRENCY),--concurrency $(CONCURRENCY),)
 
 .PHONY: data-ingest
 data-ingest: ## Continuous data ingestion daemon (long-lived; SIGINT to stop)

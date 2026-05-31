@@ -96,7 +96,7 @@ The harness is doing its job: it would have stopped us paper-trading the Donchia
 
 - **5m bars beyond 17 days** require a live capture daemon — HL's `candleSnapshot` won't backfill. Out of scope for this iteration; flag for future work.
 - **Optuna integration**: grid sweep is fine for ≤ 100 configs. For larger spaces add Optuna TPE behind the same interface.
-- **Live universe refresh cron**: monthly snapshot via `scripts/refresh_hl_universe.py` so backtests in future months use the universe that was top-N then, not the static 2026-05-30 snapshot.
+- **Daily archive cadence**: keep `make hl-capture-daily` on cron so the 5m/1h catalog compounds over time and the universe snapshot history stays fresh. The historical API alone will not extend intraday depth.
 
 ## Reproduction
 

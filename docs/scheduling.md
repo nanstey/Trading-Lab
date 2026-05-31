@@ -16,6 +16,12 @@ TRADING_LAB=/home/$USER/Code/Trading-Lab
 0 4 * * *  cd $TRADING_LAB && make sync-markets         >> logs/cron_sync.log  2>&1
 0 4 * * 0  cd $TRADING_LAB && make sync-markets-full    >> logs/cron_sync.log  2>&1
 
+# Daily 00:10 UTC: Hyperliquid incremental archive.
+# Refreshes the top-N universe snapshot, then re-pulls overlap windows for
+# 5m / 1h / 1d candles plus the last 30d of funding for the union of today's
+# and the previous snapshot's coins.
+10 0 * * * cd $TRADING_LAB && make hl-capture-daily TOP_N=20 >> logs/cron_hl_capture.log 2>&1
+
 # Strategy-ingestion middle pipeline — must run in stage order.
 # capture → dossier → distill → specify → discover.
 #
