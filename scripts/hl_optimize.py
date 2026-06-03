@@ -257,6 +257,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--initial-capital-usdc", type=float, default=10_000.0)
     p.add_argument("--max-configs", type=int, default=0, help="Cap grid size (0 = no cap)")
     p.add_argument("--max-coins", type=int, default=0, help="Cap universe size (0 = all)")
+    p.add_argument(
+        "--output-file",
+        type=Path,
+        default=None,
+        help="Optional explicit path for the JSON summary artifact",
+    )
     p.add_argument("--log-level", default="WARNING")
     p.add_argument("--no-funding", action="store_true")
     return p.parse_args(argv)
@@ -470,6 +476,12 @@ def main(argv: list[str] | None = None) -> int:
         "coverage": coverage_summary(windows),
         "all_runs": all_runs,
     }
+    output_path = args.output_file or Path("research/optimizer_outputs") / (
+        f"{args.slug}_{data_start.date().isoformat()}_{data_end.date().isoformat()}.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(summary, indent=2, default=str) + "\n")
+    summary["output_file"] = str(output_path)
     print(json.dumps(summary, indent=2, default=str))
     return 0
 

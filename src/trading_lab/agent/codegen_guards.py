@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 ALLOWED_IMPORT_PREFIXES = (
     "nautilus_trader",
     "trading_lab",
+    "bisect",
     "numpy",
     "pandas",
     "datetime",

@@ -194,6 +194,7 @@ class HyperliquidBacktestRunner:
             params=params,
             bar_type=make_bar_type(coin, bar_interval),
             instrument_id=instrument.id,
+            coin=coin,
         )
         engine.add_strategy(strategy)
 
@@ -414,6 +415,7 @@ def _instantiate_strategy(
     params: dict[str, Any],
     bar_type,
     instrument_id,
+    coin: str | None = None,
 ):
     mod = importlib.import_module(strategy_module)
     cls = getattr(mod, strategy_class)
@@ -426,6 +428,8 @@ def _instantiate_strategy(
             enriched.setdefault("bar_type", bar_type)
         if "instrument_id" in fields:
             enriched.setdefault("instrument_id", instrument_id)
+        if coin is not None and "coin" in fields:
+            enriched.setdefault("coin", coin)
         cfg = cfg_cls(**{k: v for k, v in enriched.items() if k in fields})
         strategy = cls(config=cfg)
     else:

@@ -191,7 +191,7 @@ def compute_equity_metrics(
     # Calmar: annualised return / |max DD|.
     n_periods = len(eq) - 1
     years = n_periods / periods_per_year
-    if years > 0 and start > 0:
+    if years > 0 and start > 0 and end > 0:
         cagr = (end / start) ** (1.0 / years) - 1.0
     else:
         cagr = 0.0

@@ -61,6 +61,14 @@ def test_equity_metrics_drawdown_negative():
     assert res["max_drawdown_pct"] > -50  # %
 
 
+
+def test_equity_metrics_negative_terminal_equity_keeps_calmar_real() -> None:
+    eq = pd.Series([10_000.0, 5_000.0, -100.0])
+    res = compute_equity_metrics(eq, periods_per_year=365, initial_capital=10_000.0)
+    assert isinstance(res["calmar"], float)
+    assert res["calmar"] == 0.0
+
+
 def test_combine_metrics_carries_through():
     eq = pd.Series(10_000 + np.arange(50) * 10.0)
     pm = combine_metrics(
