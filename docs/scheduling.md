@@ -47,10 +47,26 @@ TRADING_LAB=/home/$USER/Code/Trading-Lab
 # PROPOSED. This is the only cron that writes to the strategy lifecycle.
 0 1-23/6 * * *  cd $TRADING_LAB && make research-discover    >> logs/cron_discover.log 2>&1
 
-# Every 6h: take one SMOKE_PASS or BACKTEST slug and run eval. The script
-# is single-shot; an outer loop / agent can drive selecting which slug.
+# Every 6h: take one SMOKE_PASS or BACKTEST slug and run eval. Route by venue:
+# Polymarket -> research-test, Hyperliquid -> research-test-hl.
 0 */6 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state SMOKE_PASS | jq -r '.[-1].slug // empty') ; \
-             [ -n "$SLUG" ] && make research-test SLUG="$SLUG" START=2026-05-24 END=$(date -u +\%Y-\%m-\%d) >> logs/cron_test.log 2>&1
+             VENUE=$([ -n "$SLUG" ] && .venv/bin/python - <<'PY' "$SLUG"
+from pathlib import Path
+import sys, yaml
+slug = sys.argv[1]
+text = (Path('research/hypotheses') / f'{slug}.md').read_text()
+end = text.find('\n---', 3)
+fm = yaml.safe_load(text[3:end].strip()) or {}
+print(str(fm.get('venue', 'polymarket')).lower())
+PY
+) ; \
+             if [ -n "$SLUG" ]; then \
+               if [ "$VENUE" = "hyperliquid" ]; then \
+                 make research-test-hl SLUG="$SLUG" START=2026-05-24 END=$(date -u +\%Y-\%m-\%d) >> logs/cron_test.log 2>&1; \
+               else \
+                 make research-test SLUG="$SLUG" START=2026-05-24 END=$(date -u +\%Y-\%m-\%d) >> logs/cron_test.log 2>&1; \
+               fi; \
+             fi
 
 # Daily 03:00: walk-forward optimise the oldest OPTIMIZE slug.
 0 3 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state OPTIMIZE | jq -r '.[-1].slug // empty') ; \

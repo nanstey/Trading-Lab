@@ -258,11 +258,29 @@ def cron_research_test_queue() -> int:
     if not slug:
         return 0
     venue = _slug_venue(slug) or "polymarket"
-    if venue != "polymarket":
-        print(f"test-queue: skipped unsupported venue for generic eval ({slug}: {venue})")
-        return 0
     start, end = _queue_dates()
-    rc, payload, combined = _run_with_retry(["make", "research-test", f"SLUG={slug}", f"START={start}", f"END={end}"], timeout=1800)
+    if venue == "hyperliquid":
+        rc, payload, combined = _run_with_retry(
+            [
+                ".venv/bin/python3",
+                "scripts/hl_eval_strategy.py",
+                "--slug",
+                slug,
+                "--start",
+                start,
+                "--end",
+                end,
+            ],
+            timeout=1800,
+        )
+    elif venue == "polymarket":
+        rc, payload, combined = _run_with_retry(
+            ["make", "research-test", f"SLUG={slug}", f"START={start}", f"END={end}"],
+            timeout=1800,
+        )
+    else:
+        print(f"test-queue: skipped unsupported venue for eval ({slug}: {venue})")
+        return 0
     if payload is None:
         print(f"test-queue: {slug} failed ({_detail(combined)})")
         return 1

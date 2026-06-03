@@ -59,6 +59,7 @@ help:
 	@echo "  make drop-youtube-link URL='https://youtu.be/...'         Add one YouTube URL to dropbox"
 	@echo "  make research-discover                              Promote SPEC_READY/PENDING ingestion rows → PROPOSED"
 	@echo "  make research-test SLUG=<slug> START=YYYY-MM-DD END=YYYY-MM-DD"
+	@echo "  make research-test-hl SLUG=<slug> START=YYYY-MM-DD END=YYYY-MM-DD"
 	@echo "  make research-optimize SLUG=<slug> START=... END=... [WORKERS=4]"
 	@echo "  make research-status [SLUG=<slug>]                 Lifecycle state inspector"
 	@echo "  make research-validate                             5.11 known-bad + known-good"
@@ -313,9 +314,14 @@ specify-hypotheses: ## Scaffold the next oldest MEMO_READY/PENDING spec (cron-fr
 	else echo "[SILENT]"; fi
 
 .PHONY: research-test
-research-test: ## Evaluate one SLUG (eval_strategy.py)
+research-test: ## Evaluate one Polymarket SLUG (eval_strategy.py)
 	@if [ -z "$(SLUG)" ]; then echo "Usage: make research-test SLUG=<slug> START=YYYY-MM-DD END=YYYY-MM-DD"; exit 1; fi
 	$(PYTHON) $(SCRIPTS)/eval_strategy.py --slug $(SLUG) --start $(START) --end $(END)
+
+.PHONY: research-test-hl
+research-test-hl: ## Evaluate one Hyperliquid SLUG (hl_eval_strategy.py)
+	@if [ -z "$(SLUG)" ]; then echo "Usage: make research-test-hl SLUG=<slug> START=YYYY-MM-DD END=YYYY-MM-DD"; exit 1; fi
+	$(PYTHON) $(SCRIPTS)/hl_eval_strategy.py --slug $(SLUG) --start $(START) --end $(END)
 
 .PHONY: research-optimize
 research-optimize: ## Walk-forward optimise one SLUG

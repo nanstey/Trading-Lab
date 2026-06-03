@@ -60,3 +60,26 @@ def test_extract_response_reads_no_agent_stdout() -> None:
         hermes_cron_auditor._extract_response(text)
         == 'paper-watcher: runner missing (tick-mean-revert)'
     )
+
+
+def test_research_test_queue_dispatches_hl_eval(monkeypatch) -> None:
+    monkeypatch.setattr(hermes_remaining_crons, "_budget_backtests", lambda: 0)
+    monkeypatch.setattr(hermes_remaining_crons, "_oldest_slug", lambda states: "hl-bollinger-mr")
+    monkeypatch.setattr(hermes_remaining_crons, "_slug_venue", lambda slug: "hyperliquid")
+    monkeypatch.setattr(hermes_remaining_crons, "_slug_state", lambda slug: "OPTIMIZE")
+
+    calls = []
+
+    def fake_run_with_retry(cmd, *, timeout, retries=1):
+        calls.append((cmd, timeout, retries))
+        return 0, {"ok": True, "decision_new_state": "OPTIMIZE", "pnl_usdc": 12.5, "n_trades": 45}, ""
+
+    monkeypatch.setattr(hermes_remaining_crons, "_run_with_retry", fake_run_with_retry)
+    monkeypatch.setattr(hermes_remaining_crons, "_run", lambda *args, **kwargs: None)
+
+    rc = hermes_remaining_crons.cron_research_test_queue()
+    assert rc == 0
+    assert calls
+    assert calls[0][0][:2] == [".venv/bin/python3", "scripts/hl_eval_strategy.py"]
+    assert "--slug" in calls[0][0]
+    assert "hl-bollinger-mr" in calls[0][0]

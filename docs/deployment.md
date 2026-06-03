@@ -73,8 +73,25 @@ PATH=/usr/local/bin:/usr/bin:/bin
 0 9 * * *  cd $TRADING_LAB && make research-discover RSS=1  >> logs/cron_discover.log 2>&1
 
 # Every 6h at minute 7: take the oldest SMOKE_PASS slug and eval it.
+# Route by venue: Polymarket -> research-test, Hyperliquid -> research-test-hl.
 7 */6 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state SMOKE_PASS | jq -r '.[-1].slug // empty') ; \
-             [ -n "$SLUG" ] && make research-test SLUG="$SLUG" START=$(date -u -d "30 days ago" +\%Y-\%m-\%d) END=$(date -u +\%Y-\%m-\%d) >> logs/cron_test.log 2>&1
+             VENUE=$([ -n "$SLUG" ] && .venv/bin/python - <<'PY' "$SLUG"
+from pathlib import Path
+import sys, yaml
+slug = sys.argv[1]
+text = (Path('research/hypotheses') / f'{slug}.md').read_text()
+end = text.find('\n---', 3)
+fm = yaml.safe_load(text[3:end].strip()) or {}
+print(str(fm.get('venue', 'polymarket')).lower())
+PY
+) ; \
+             if [ -n "$SLUG" ]; then \
+               if [ "$VENUE" = "hyperliquid" ]; then \
+                 make research-test-hl SLUG="$SLUG" START=$(date -u -d "30 days ago" +\%Y-\%m-\%d) END=$(date -u +\%Y-\%m-\%d) >> logs/cron_test.log 2>&1; \
+               else \
+                 make research-test SLUG="$SLUG" START=$(date -u -d "30 days ago" +\%Y-\%m-\%d) END=$(date -u +\%Y-\%m-\%d) >> logs/cron_test.log 2>&1; \
+               fi; \
+             fi
 
 # Daily 03:00 UTC: walk-forward optimise the oldest OPTIMIZE slug.
 0 3 * * *  cd $TRADING_LAB && SLUG=$(.venv/bin/python scripts/research_cli.py list --state OPTIMIZE | jq -r '.[-1].slug // empty') ; \
