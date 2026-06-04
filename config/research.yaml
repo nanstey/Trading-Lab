@@ -9,30 +9,61 @@
 # - prefer no-secret public sources for v1
 # - keep the active source pack small until noise is understood
 # - use `enabled: false` to keep a source defined but dormant
+# - for now, only RSS / YouTube / arXiv are wired into capture
+# - free APIs like Finnhub / Alpha Vantage / FRED remain a future feature-source
+#   layer, not a capture source type yet
 
 rss:
+  # Active narrow free-source pack: direct quant research blogs plus one curated
+  # aggregator. Every active feed requires strategy relevance filtering.
   - name: quantocracy
     url: https://quantocracy.com/feed/
     window_days: 14
     enabled: true
+    require_relevance: true
+    keywords: [arbitrage, mean reversion, stat arb, market making, microstructure, volatility, order flow, liquidity, kelly, execution, prediction market, portfolio, alpha, signal]
+
   - name: robot-wealth
     url: https://www.robotwealth.com/feed/
     window_days: 30
     enabled: true
+    require_relevance: true
+    keywords: [arbitrage, mean reversion, stat arb, pairs, market making, microstructure, volatility, order flow, liquidity, execution, signal]
+
   - name: hudson-thames
     url: https://hudsonthames.org/feed/
     window_days: 30
     enabled: true
+    require_relevance: true
+    keywords: [mean reversion, momentum, stat arb, portfolio, microstructure, execution, liquidity, alpha, signal]
+
+  - name: alpha-architect
+    url: https://alphaarchitect.com/feed/
+    window_days: 21
+    enabled: true
+    require_relevance: true
+    keywords: [momentum, mean reversion, trend, portfolio, factor, volatility, alpha, signal]
+
+  # Broad educational/infrastructure blog; keep dormant until we decide we want
+  # more implementation and tooling content in the funnel.
+  - name: quantinsti-blog
+    url: https://blog.quantinsti.com/feed/
+    window_days: 21
+    enabled: false
+    require_relevance: true
+    keywords: [trading strategy, mean reversion, arbitrage, momentum, execution, market making, portfolio, volatility, signal]
 
 youtube:
+  # Disabled: the previously tested channel was producing generic business / AI
+  # news rather than durable strategy research. Re-enable only after replacing it
+  # with a transcript-friendly, high-signal quant channel.
   - name: quant-channel
     channel_id: UCvJJ_dzjViJCoLf5uKUTwoA
     feed_url: https://www.youtube.com/feeds/videos.xml?channel_id=UCvJJ_dzjViJCoLf5uKUTwoA
     window_days: 21
     languages: [en]
     keywords: [trading, option, options, kelly, arbitrage, market, pricing, volatility, portfolio, liquidity]
-    enabled: true
-  # Add more transcript-friendly channels here as they are vetted.
+    enabled: false
 
 arxiv:
   # Temporarily disabled until we tighten the paper/whitepaper intake policy.

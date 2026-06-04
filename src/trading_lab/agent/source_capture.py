@@ -240,25 +240,34 @@ def scan_rss_sources(
     for source in sources:
         if not source.get("enabled"):
             continue
+        source_name = str(source.get("name") or "rss")
+        source_type = f"rss:{source_name}"
         url = str(source.get("url") or "").strip()
         if not url:
             continue
         window_days = int(source.get("window_days", 14))
+        keywords = list(source.get("keywords") or []) if isinstance(source.get("keywords"), list) else None
+        require_relevance = bool(source.get("require_relevance"))
         for entry in _parse_feed(url)[:max_items_per_source]:
             entry_url = str(entry.get("link") or "").strip()
             if not entry_url or already_seen(entry_url, db_path=db_path):
                 continue
             if not _within_window(entry.get("published"), now=now, window_days=window_days):
                 continue
+            title = str(entry.get("title") or "").strip()
+            summary = str(entry.get("summary") or "").strip()
+            content = f"# {title}\n\n{summary}".strip()
+            if (require_relevance or keywords) and not _is_strategy_relevant(content, source_type, keywords=keywords):
+                continue
             out.append(
                 SourceItem(
-                    source_name=str(source.get("name") or "rss"),
-                    source_type=f"rss:{source.get('name', 'rss')}",
-                    title=str(entry.get("title") or "").strip(),
+                    source_name=source_name,
+                    source_type=source_type,
+                    title=title,
                     url=entry_url,
                     published_at=_isoformat(entry.get("published"), default=now),
-                    content=str(entry.get("summary") or "").strip(),
-                    summary=str(entry.get("summary") or "").strip(),
+                    content=content,
+                    summary=summary,
                 )
             )
     return out

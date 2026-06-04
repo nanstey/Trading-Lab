@@ -59,6 +59,48 @@ def test_scan_rss_sources_filters_duplicates_and_old_items(tmp_path, monkeypatch
     assert items[0].source_type == "rss:test-feed"
 
 
+def test_scan_rss_sources_can_require_relevance_keywords(tmp_path, monkeypatch):
+    db_path = tmp_path / "experiments.db"
+    lifecycle.init_db(db_path)
+
+    feeds = {
+        "https://example.com/feed.xml": [
+            {
+                "title": "State space models for market making",
+                "link": "https://example.com/relevant",
+                "summary": "A practical execution and liquidity framework for market making.",
+                "published": datetime(2026, 5, 25, tzinfo=UTC),
+            },
+            {
+                "title": "Company offsite recap",
+                "link": "https://example.com/irrelevant",
+                "summary": "Team updates, hiring, and product launch notes.",
+                "published": datetime(2026, 5, 25, tzinfo=UTC),
+            },
+        ]
+    }
+
+    monkeypatch.setattr(source_capture, "_parse_feed", lambda url: feeds[url])
+
+    items = source_capture.scan_rss_sources(
+        [
+            {
+                "name": "strategy-feed",
+                "url": "https://example.com/feed.xml",
+                "enabled": True,
+                "window_days": 14,
+                "require_relevance": True,
+                "keywords": ["market making", "liquidity", "execution"],
+            }
+        ],
+        db_path=db_path,
+        now=datetime(2026, 5, 26, tzinfo=UTC),
+    )
+
+    assert [item.url for item in items] == ["https://example.com/relevant"]
+    assert "market making" in items[0].content.lower()
+
+
 def test_scan_youtube_sources_uses_feed_and_transcript(monkeypatch, tmp_path):
     db_path = tmp_path / "experiments.db"
     lifecycle.init_db(db_path)
