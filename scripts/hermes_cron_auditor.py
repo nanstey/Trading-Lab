@@ -19,6 +19,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -233,12 +234,26 @@ def _stale(output: CronOutput, *, minutes: int) -> bool:
 
 
 def _iter_runner_missing(responses: Iterable[tuple[str, CronOutput]]) -> Iterable[tuple[str, CronOutput, str]]:
-    pat = re.compile(r"runner missing \(([^)]+)\)")
+    watcher_pat = re.compile(r"runner missing \(([^)]+)\)")
+    summary_pat = re.compile(r"\(([^():]+): runner_missing\)")
     for source, output in responses:
         resp = output.response or ""
-        m = pat.search(resp)
+        m = watcher_pat.search(resp)
         if m:
             yield source, output, m.group(1)
+            continue
+        m = summary_pat.search(resp)
+        if m:
+            yield source, output, m.group(1)
+
+
+def _runner_missing_by_slug(
+    responses: Iterable[tuple[str, CronOutput]],
+) -> dict[str, list[tuple[str, CronOutput]]]:
+    grouped: dict[str, list[tuple[str, CronOutput]]] = defaultdict(list)
+    for source, output, slug in _iter_runner_missing(responses):
+        grouped[slug].append((source, output))
+    return grouped
 
 
 def main() -> int:
@@ -264,43 +279,44 @@ def main() -> int:
                     if not ok:
                         failures.append(f"{slug}: {detail}")
                 if failures:
-                    actions.append(f"paper-summary stale; rerun partial failure ({'; '.join(failures[:2])})")
+                    actions.append(f"self-healed stale paper-summary schedule; rerun partial failure ({'; '.join(failures[:2])})")
                 else:
-                    actions.append(f"paper-summary stale; reran {len(slugs)} PAPER slug(s)")
+                    actions.append(f"self-healed stale paper-summary schedule; reran {len(slugs)} PAPER slug(s)")
 
     if _stale(latest["paper_watcher"], minutes=95):
         marker = f"paper_watcher_stale:{latest['paper_watcher'].path}"
         if _mark_action(state, "paper_watcher_stale", marker):
             ok, detail = _run_paper_watcher()
             if ok:
-                actions.append("paper-watcher stale; reran watcher")
+                actions.append("self-healed stale paper-watcher schedule; reran watcher")
             else:
-                actions.append(f"paper-watcher stale; rerun failed ({detail})")
+                actions.append(f"self-healed stale paper-watcher schedule; rerun failed ({detail})")
 
     runner_missing_sources = [
         ("paper-summary", latest["paper_summary"]),
         ("paper-watcher", latest["paper_watcher"]),
     ]
     if not KILL_SWITCH_PATH.exists():
-        for source, output, slug in _iter_runner_missing(runner_missing_sources):
-            marker = f"{source}:{output.path}:{slug}"
+        for slug, items in _runner_missing_by_slug(runner_missing_sources).items():
+            source_labels = ",".join(source for source, _ in items)
+            marker = "|".join(f"{source}:{output.path}:{slug}" for source, output in items)
             if not _mark_action(state, f"runner_missing:{slug}", marker):
                 continue
             if _slug_state(slug) != "PAPER":
-                actions.append(f"runner-missing ignored; {slug} no longer PAPER")
+                actions.append(f"acknowledged cron failures ({source_labels}) for {slug}; slug no longer PAPER")
                 continue
             if _runner_active(slug):
-                actions.append(f"runner-missing ignored; {slug} already active")
+                actions.append(f"acknowledged cron failures ({source_labels}) for {slug}; runner already active")
                 continue
             ok, detail = _start_runner(slug)
             if not ok:
-                actions.append(f"runner restart failed for {slug} ({detail})")
+                actions.append(f"self-heal failed for cron failures ({source_labels}) on {slug}; runner restart failed ({detail})")
                 continue
             summary_ok, summary_detail = _run_paper_summary(slug)
             if summary_ok:
-                actions.append(f"restarted paper runner for {slug}; refreshed summary")
+                actions.append(f"self-healed cron failures ({source_labels}) for {slug}: restarted paper runner and refreshed summary")
             else:
-                actions.append(f"restarted paper runner for {slug}; summary refresh failed ({summary_detail})")
+                actions.append(f"self-healed cron failures ({source_labels}) for {slug}: restarted paper runner; summary refresh failed ({summary_detail})")
     else:
         for source, output, slug in _iter_runner_missing(runner_missing_sources):
             marker = f"{source}:{output.path}:{slug}:killswitch"
@@ -316,9 +332,9 @@ def main() -> int:
                 ok, detail = _run_sync(full=full)
                 scope = "sync-markets full" if full else "sync-markets daily"
                 if ok:
-                    actions.append(f"reran {scope} after transient failure")
+                    actions.append(f"self-healed transient {scope} cron failure; reran job successfully")
                 else:
-                    actions.append(f"reran {scope} but it still failed ({detail})")
+                    actions.append(f"self-heal failed for transient {scope} cron failure ({detail})")
 
     for key, job_id, label in (
         ("sync_daily_recovery_streak", SYNC_DAILY_JOB, "sync-markets daily"),
@@ -333,7 +349,7 @@ def main() -> int:
     _save_state(state)
 
     if actions:
-        print("cron-auditor: " + "; ".join(actions[:3]))
+        print("cron-auditor remediation: " + "; ".join(actions[:3]))
     return 0
 
 

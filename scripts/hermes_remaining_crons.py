@@ -311,7 +311,6 @@ def cron_research_optimize_queue() -> int:
     if not slug:
         return 0
     venue = _slug_venue(slug) or "polymarket"
-    start, end = _queue_dates()
     if venue == "hyperliquid":
         rc, payload, combined = _run_with_retry(
             [
@@ -319,14 +318,11 @@ def cron_research_optimize_queue() -> int:
                 "scripts/hl_optimize.py",
                 "--slug",
                 slug,
-                "--data-start",
-                start,
-                "--data-end",
-                end,
             ],
             timeout=3600,
         )
     else:
+        start, end = _queue_dates()
         rc, payload, combined = _run_with_retry(["make", "research-optimize", f"SLUG={slug}", f"START={start}", f"END={end}"], timeout=3600)
     if payload is None:
         print(f"optimize-queue: {slug} failed ({_detail(combined)})")
