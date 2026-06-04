@@ -55,9 +55,27 @@ def _detail(text: str) -> str:
     return "no_detail"
 
 
+def _autocommit_market_catalog(*, label: str) -> tuple[bool, str | None]:
+    proc = _run(
+        [
+            ".venv/bin/python3",
+            "scripts/commit_repo_changes.py",
+            "--paths",
+            "data/market_catalog.db",
+            "--message",
+            f"chore(data): initialize market catalog via {label} sync",
+            "--push",
+        ]
+    )
+    if proc.returncode != 0:
+        return False, _detail(f"{proc.stdout}\n{proc.stderr}")
+    return True, _detail(proc.stdout)
+
+
 def main() -> int:
     args = parse_args()
     label = "full" if args.full else "daily"
+    db_existed = DB_PATH.exists()
     primary = [
         ".venv/bin/python3",
         "scripts/sync_market_metadata.py",
@@ -75,6 +93,13 @@ def main() -> int:
 
     first = _run(primary)
     if first.returncode == 0 and DB_PATH.exists():
+        if not db_existed:
+            ok, detail = _autocommit_market_catalog(label=label)
+            if not ok:
+                print(f"sync-markets {label}: auto-commit failed ({detail})")
+                return 1
+            print(f"sync-markets {label}: ok, committed market catalog")
+            return 0
         print(f"sync-markets {label}: ok")
         return 0
 
@@ -85,6 +110,13 @@ def main() -> int:
 
     second = _run(fallback)
     if second.returncode == 0 and DB_PATH.exists():
+        if not db_existed:
+            ok, detail = _autocommit_market_catalog(label=label)
+            if not ok:
+                print(f"sync-markets {label}: auto-commit failed ({detail})")
+                return 1
+            print(f"sync-markets {label}: recovered after retry, committed market catalog")
+            return 0
         print(f"sync-markets {label}: recovered after retry")
         return 0
 

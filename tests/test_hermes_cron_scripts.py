@@ -83,3 +83,40 @@ def test_research_test_queue_dispatches_hl_eval(monkeypatch) -> None:
     assert calls[0][0][:2] == [".venv/bin/python3", "scripts/hl_eval_strategy.py"]
     assert "--slug" in calls[0][0]
     assert "hl-bollinger-mr" in calls[0][0]
+
+
+
+def test_autocommit_new_files_runs_commit_helper(monkeypatch) -> None:
+    before = {"research/paper_reports/existing.md"}
+    after = before | {"research/paper_reports/new.md"}
+
+    monkeypatch.setattr(hermes_remaining_crons, "_snapshot_files", lambda paths: after)
+    monkeypatch.setattr(
+        hermes_remaining_crons,
+        "_run_json",
+        lambda cmd, timeout=300: (0, {"ok": True, "commit": "abcdef123456"}, ""),
+    )
+
+    ok, detail = hermes_remaining_crons._autocommit_new_files(
+        before=before,
+        paths=["research/paper_reports"],
+        message="chore(reports): record new paper summary artifacts",
+    )
+
+    assert ok is True
+    assert detail == "abcdef123456"
+
+
+
+def test_autocommit_new_files_noops_without_new_files(monkeypatch) -> None:
+    before = {"research/paper_reports/existing.md"}
+    monkeypatch.setattr(hermes_remaining_crons, "_snapshot_files", lambda paths: before)
+
+    ok, detail = hermes_remaining_crons._autocommit_new_files(
+        before=before,
+        paths=["research/paper_reports"],
+        message="chore(reports): record new paper summary artifacts",
+    )
+
+    assert ok is True
+    assert detail is None

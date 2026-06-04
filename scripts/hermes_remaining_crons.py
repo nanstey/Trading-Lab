@@ -164,8 +164,53 @@ def _run_with_retry(cmd: list[str], *, timeout: int, retries: int = 1) -> tuple[
     return last
 
 
+def _snapshot_files(paths: list[str]) -> set[str]:
+    snapshot: set[str] = set()
+    for rel in paths:
+        path = REPO_ROOT / rel
+        if path.is_file():
+            snapshot.add(rel)
+            continue
+        if not path.exists():
+            continue
+        for child in path.rglob("*"):
+            if child.is_file():
+                snapshot.add(str(child.relative_to(REPO_ROOT)))
+    return snapshot
+
+
+def _autocommit_new_files(
+    *,
+    before: set[str],
+    paths: list[str],
+    message: str,
+    force: bool = False,
+) -> tuple[bool, str | None]:
+    after = _snapshot_files(paths)
+    if not sorted(after - before):
+        return True, None
+    cmd = [
+        ".venv/bin/python3",
+        "scripts/commit_repo_changes.py",
+        "--paths",
+        ",".join(paths),
+        "--message",
+        message,
+        "--push",
+    ]
+    if force:
+        cmd.append("--force")
+    rc, payload, combined = _run_json(cmd, timeout=300)
+    if rc != 0 or payload is None or not payload.get("ok", False):
+        reason = (payload or {}).get("error") or _detail(combined)
+        return False, str(reason)
+    return True, str(payload.get("commit") or "")
+
+
 def cron_link_dropbox() -> int:
     _run([".venv/bin/python3", "scripts/research_cli.py", "init"], timeout=120)
+    commit_paths = ["research/captures", "research/manual_inbox"]
+    before = _snapshot_files(commit_paths)
     rc, payload, combined = _run_json(["make", "research-link-dropbox"], timeout=900)
     if payload is None:
         print(f"link-dropbox: failed ({_detail(combined)})")
@@ -184,12 +229,23 @@ def cron_link_dropbox() -> int:
     if rc != 0 or error_files:
         print(f"link-dropbox: {error_files} errored")
         return 1 if rc != 0 else 0
-    print(f"link-dropbox: {processed} processed, {pending_written} pending, {duplicates} duplicates")
+    ok, detail = _autocommit_new_files(
+        before=before,
+        paths=commit_paths,
+        message="chore(research): capture link-dropbox artifacts",
+    )
+    if not ok:
+        print(f"link-dropbox: auto-commit failed ({detail})")
+        return 1
+    suffix = f", committed {detail[:7]}" if detail else ""
+    print(f"link-dropbox: {processed} processed, {pending_written} pending, {duplicates} duplicates{suffix}")
     return 0
 
 
 def cron_research_capture() -> int:
     _run([".venv/bin/python3", "scripts/research_cli.py", "init"], timeout=120)
+    commit_paths = ["research/captures", "research/manual_inbox"]
+    before = _snapshot_files(commit_paths)
     rc, payload, combined = _run_json(["make", "research-capture", "SOURCE_ARGS=--all --max-per-source 3"], timeout=1800)
     if payload is None:
         print(f"research-capture: failed ({_detail(combined)})")
@@ -207,7 +263,16 @@ def cron_research_capture() -> int:
     if rc != 0 or errors:
         print(f"research-capture: {len(errors)} error(s)")
         return 1 if rc != 0 else 0
-    print(f"research-capture: {captured} captured, {pending_written} pending, {duplicates} duplicates")
+    ok, detail = _autocommit_new_files(
+        before=before,
+        paths=commit_paths,
+        message="chore(research): capture new source artifacts",
+    )
+    if not ok:
+        print(f"research-capture: auto-commit failed ({detail})")
+        return 1
+    suffix = f", committed {detail[:7]}" if detail else ""
+    print(f"research-capture: {captured} captured, {pending_written} pending, {duplicates} duplicates{suffix}")
     return 0
 
 
@@ -215,6 +280,8 @@ def cron_research_discover() -> int:
     _run([".venv/bin/python3", "scripts/research_cli.py", "init"], timeout=120)
     if _count_glob(INBOX_DIR, "*.md") == 0:
         return 0
+    commit_paths = ["research/manual_inbox", "research/hypotheses"]
+    before = _snapshot_files(commit_paths)
     rc, payload, combined = _run_json(["make", "research-discover"], timeout=1200)
     if payload is None:
         print(f"discover: failed ({_detail(combined)})")
@@ -235,8 +302,17 @@ def cron_research_discover() -> int:
         name = first.get("spec_path") or first.get("thesis_slug") or first.get("error") or _detail(combined)
         print(f"discover: {len(errors)} error ({name})")
         return 1 if rc != 0 else 0
+    ok, detail = _autocommit_new_files(
+        before=before,
+        paths=commit_paths,
+        message="chore(research): register discovered hypotheses",
+    )
+    if not ok:
+        print(f"discover: auto-commit failed ({detail})")
+        return 1
     shown = ", ".join(verified[:3])
-    print(f"discover: {discovered} new ({shown})")
+    suffix = f", committed {detail[:7]}" if detail else ""
+    print(f"discover: {discovered} new ({shown}){suffix}")
     return 0
 
 
@@ -310,6 +386,8 @@ def cron_research_optimize_queue() -> int:
     slug = _oldest_slug(["OPTIMIZE"])
     if not slug:
         return 0
+    commit_paths = ["research/optimizer_outputs", "research/hypotheses"]
+    before = _snapshot_files(commit_paths)
     venue = _slug_venue(slug) or "polymarket"
     if venue == "hyperliquid":
         rc, payload, combined = _run_with_retry(
@@ -341,13 +419,22 @@ def cron_research_optimize_queue() -> int:
     if "grid_metrics_identical" in (payload.get("warnings") or []) or payload.get("decision_rejection_category") == "param_space_inert":
         print(f"optimize-queue: {slug} failed (param_space_inert)")
         return 1
+    ok, detail = _autocommit_new_files(
+        before=before,
+        paths=commit_paths,
+        message="chore(research): record optimizer artifacts",
+    )
+    if not ok:
+        print(f"optimize-queue: auto-commit failed ({detail})")
+        return 1
     recent_oos = float(
         payload.get(
             "best_recent_oos_pnl",
             payload.get("best_oos_total_pnl", payload.get("best_recent_oos_sharpe", payload.get("best_oos_mean_sharpe", 0.0))),
         )
     )
-    print(f"optimize-queue: {slug} -> {new_state} recent_oos={recent_oos:.2f}")
+    suffix = f", committed {detail[:7]}" if detail else ""
+    print(f"optimize-queue: {slug} -> {new_state} recent_oos={recent_oos:.2f}{suffix}")
     return 0
 
 
@@ -355,6 +442,8 @@ def cron_paper_summary() -> int:
     slugs = _slugs_in_state("PAPER")
     if not slugs:
         return 0
+    commit_paths = ["research/paper_reports"]
+    before = _snapshot_files(commit_paths)
     utcdate = datetime.now(tz=UTC).strftime("%Y%m%d")
     failures: list[str] = []
     success_count = 0
@@ -374,6 +463,16 @@ def cron_paper_summary() -> int:
             continue
         success_count += 1
     if not failures:
+        ok, detail = _autocommit_new_files(
+            before=before,
+            paths=commit_paths,
+            message="chore(reports): record new paper summary artifacts",
+        )
+        if not ok:
+            print(f"paper-summary: auto-commit failed ({detail})")
+            return 1
+        if detail:
+            print(f"paper-summary: committed {detail[:7]}")
         return 0
     if len(failures) == len(slugs):
         first = "; ".join(failures[:2])

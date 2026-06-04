@@ -25,6 +25,16 @@ def _init_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _init_repo_with_remote(tmp_path: Path) -> Path:
+    remote = tmp_path / "remote.git"
+    _git(["init", "--bare", str(remote)], tmp_path)
+    repo = _init_repo(tmp_path)
+    _git(["remote", "add", "origin", str(remote)], repo)
+    _git(["branch", "-M", "main"], repo)
+    _git(["push", "-u", "origin", "main"], repo)
+    return repo
+
+
 def test_commit_repo_changes_noop(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     proc = subprocess.run(
@@ -67,3 +77,31 @@ def test_commit_repo_changes_force_adds_ignored_files(tmp_path: Path) -> None:
     assert "add ignored artifact" in head
     tracked = _git(["ls-files", "ignored/data.parquet"], repo).stdout.strip()
     assert tracked == "ignored/data.parquet"
+
+
+def test_commit_repo_changes_pushes_when_requested(tmp_path: Path) -> None:
+    repo = _init_repo_with_remote(tmp_path)
+    target = repo / "reports" / "artifact.txt"
+    target.parent.mkdir()
+    target.write_text("payload\n")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--paths",
+            "reports",
+            "--message",
+            "push artifact",
+            "--push",
+        ],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "pushed"
+    ahead = _git(["rev-list", "--left-right", "--count", "origin/main...HEAD"], repo).stdout.strip()
+    assert ahead == "0\t0"

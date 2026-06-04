@@ -39,6 +39,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Use git add -f so ignored generated outputs can be committed.",
     )
+    p.add_argument(
+        "--push",
+        action="store_true",
+        help="Push the resulting commit to the current branch upstream.",
+    )
     return p.parse_args(argv)
 
 
@@ -91,17 +96,37 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     rev = _run_git(["rev-parse", "HEAD"], cwd=repo)
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "status": "committed",
-                "commit": rev.stdout.strip(),
-                "paths": paths,
-                "files": staged_files,
-            }
-        )
-    )
+    status = "committed"
+    payload: dict[str, object] = {
+        "ok": True,
+        "status": status,
+        "commit": rev.stdout.strip(),
+        "paths": paths,
+        "files": staged_files,
+    }
+
+    if args.push:
+        push = _run_git(["push"], cwd=repo)
+        if push.returncode != 0:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "git_push_failed",
+                        "stdout": push.stdout.strip(),
+                        "stderr": push.stderr.strip(),
+                        "commit": rev.stdout.strip(),
+                        "paths": paths,
+                        "files": staged_files,
+                    }
+                )
+            )
+            return 1
+        payload["status"] = "pushed"
+        payload["push_stdout"] = push.stdout.strip()
+        payload["push_stderr"] = push.stderr.strip()
+
+    print(json.dumps(payload))
     return 0
 
 

@@ -402,7 +402,7 @@ hl-capture-daily-commit: ## Run HL daily capture and auto-commit generated archi
 	    $(if $(COINS),--coins $(COINS),) \
 	    $(if $(INTERVALS),--intervals $(INTERVALS),) \
 	    $(if $(CONCURRENCY),--concurrency $(CONCURRENCY),)
-	$(PYTHON) $(SCRIPTS)/commit_repo_changes.py --force \
+	$(PYTHON) $(SCRIPTS)/commit_repo_changes.py --force --push \
 	    --paths data/parquet/hyperliquid \
 	    --message "chore(data): update hyperliquid daily archive"
 
