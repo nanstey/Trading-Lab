@@ -42,24 +42,36 @@ def decide(
     n_trades: int,
     pnl: float = 0.0,
     min_trades: int = 30,
-) -> tuple[str, str]:
+    *,
+    expectancy_usdc: float = 0.0,
+    fill_rate: float = 0.0,
+    n_orders: int = 0,
+    n_fills: int = 0,
+    n_markets: int = 1,
+    n_markets_with_fills: int = 1,
+    min_fill_rate: float = 0.05,
+    min_markets_with_fills: int = 2,
+) -> tuple[str, str, dict]:
     from trading_lab.agent.lifecycle import State
+    from trading_lab.research.eval_methodology import assess_backtest
 
-    if n_trades < min_trades:
-        return State.REJECTED.value, "insufficient_trades"
-    if pnl < 0:
-        return State.REJECTED.value, "unprofitable"
-    if pnl > 0 and sharpe < 0 and n_trades >= max(100, min_trades * 3):
-        return State.OPTIMIZE.value, ""
-    if sharpe < 0.5:
-        return State.SHELVED.value, "marginal_is"
-    if sharpe < 1.0:
-        if abs(max_dd_pct) > 25:
-            return State.REJECTED.value, "high_dd"
-        return State.SHELVED.value, "marginal_is"
-    if abs(max_dd_pct) > 20:
-        return State.REJECTED.value, "high_dd"
-    return State.OPTIMIZE.value, ""
+    decision = assess_backtest(
+        state_enum=State,
+        sharpe=sharpe,
+        max_dd_pct=max_dd_pct,
+        n_trades=n_trades,
+        pnl_usdc=pnl,
+        expectancy_usdc=expectancy_usdc,
+        fill_rate=fill_rate,
+        n_orders=n_orders,
+        n_fills=n_fills,
+        n_markets=n_markets,
+        n_markets_with_fills=n_markets_with_fills,
+        min_trades=min_trades,
+        min_fill_rate=min_fill_rate,
+        min_markets_with_fills=min_markets_with_fills,
+    )
+    return decision.new_state, decision.rejection_category, decision.methodology
 
 
 def _last_json(stdout: str) -> dict[str, Any]:
@@ -131,6 +143,7 @@ def _extract_result_metrics(payload: dict[str, Any]) -> dict[str, Any]:
         "max_dd_pct": float(metrics.get("max_drawdown_pct", 0.0)),
         "n_trades": int(metrics.get("n_trades", 0)),
         "pnl_usdc": float(pnl),
+        "expectancy_usdc": float(metrics.get("expectancy", 0.0)),
         "fill_rate": (n_fills / max(n_orders, 1)),
         "n_orders": n_orders,
         "n_fills": n_fills,
@@ -187,6 +200,18 @@ def main() -> int:
         help="Reject as insufficient_trades when n_trades below this. Default 30; lower it for short data windows during integration testing.",
     )
     p.add_argument("--db", type=Path, default=Path("research/experiments.db"))
+    p.add_argument(
+        "--min-fill-rate",
+        type=float,
+        default=0.05,
+        help="Shelf as thin_execution when fill_rate is below this threshold and orders were placed.",
+    )
+    p.add_argument(
+        "--min-markets-with-fills",
+        type=int,
+        default=2,
+        help="When evaluating multi-market portfolios, shelf as insufficient_breadth below this many filled markets.",
+    )
     p.add_argument(
         "--no-transition",
         action="store_true",
@@ -266,12 +291,20 @@ def main() -> int:
     )
     budget.consume("backtests", db_path=args.db)
 
-    new_state, category = decide(
+    new_state, category, methodology = decide(
         float(extracted["sharpe"]),
         float(extracted["max_dd_pct"]),
         int(extracted["n_trades"]),
         pnl=float(extracted["pnl_usdc"]),
         min_trades=args.min_trades_floor,
+        expectancy_usdc=float(extracted.get("expectancy_usdc", 0.0)),
+        fill_rate=float(extracted["fill_rate"]),
+        n_orders=int(extracted["n_orders"]),
+        n_fills=int(extracted["n_fills"]),
+        n_markets=int(extracted["n_markets"]),
+        n_markets_with_fills=int(extracted["n_markets_with_fills"]),
+        min_fill_rate=float(args.min_fill_rate),
+        min_markets_with_fills=int(args.min_markets_with_fills),
     )
 
     out = {
@@ -283,10 +316,13 @@ def main() -> int:
         "pnl_usdc": extracted["pnl_usdc"],
         "max_dd_pct": extracted["max_dd_pct"],
         "n_trades": extracted["n_trades"],
+        "expectancy_usdc": extracted.get("expectancy_usdc", 0.0),
+        "fill_rate": extracted["fill_rate"],
         "n_orders": extracted["n_orders"],
         "n_fills": extracted["n_fills"],
         "n_markets": extracted["n_markets"],
         "n_markets_with_fills": extracted["n_markets_with_fills"],
+        "methodology": methodology,
         "decision_new_state": new_state,
         "decision_rejection_category": category,
         "applied": False,
@@ -299,6 +335,7 @@ def main() -> int:
                 reason=(
                     f"hl_eval: sharpe={extracted['sharpe']:.3f} "
                     f"dd={extracted['max_dd_pct']:.1f}% trades={extracted['n_trades']} "
+                    f"exp={extracted.get('expectancy_usdc', 0.0):.4f} fill={extracted['fill_rate']:.3f} "
                     f"markets={extracted['n_markets_with_fills']}/{extracted['n_markets']}"
                 ),
                 actor=args.actor,

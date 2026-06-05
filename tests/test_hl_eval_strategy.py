@@ -47,6 +47,7 @@ def test_extract_result_metrics_for_portfolio_payload() -> None:
         "max_dd_pct": -4.5,
         "n_trades": 12,
         "pnl_usdc": 105.0,
+        "expectancy_usdc": 0.0,
         "fill_rate": 8 / 15,
         "n_orders": 15,
         "n_fills": 8,
@@ -67,23 +68,30 @@ def test_extract_result_metrics_falls_back_to_price_plus_funding() -> None:
                 "max_drawdown_pct": -1.0,
                 "price_pnl": 10.0,
                 "funding_pnl": 3.5,
+                "expectancy": 6.75,
                 "extras": {},
             },
         },
     }
     got = hl_eval_strategy._extract_result_metrics(payload)
     assert got["pnl_usdc"] == 13.5
+    assert got["expectancy_usdc"] == 6.75
     assert got["fill_rate"] == 0.5
     assert got["n_markets"] == 1
 
 
 def test_decide_positive_pnl_negative_sharpe_can_optimize() -> None:
-    state, category = hl_eval_strategy.decide(
+    state, category, methodology = hl_eval_strategy.decide(
         sharpe=-0.2,
         max_dd_pct=-5.0,
         n_trades=120,
         pnl=50.0,
         min_trades=30,
+        expectancy_usdc=50.0 / 120.0,
+        fill_rate=0.4,
+        n_orders=300,
+        n_fills=120,
     )
     assert state == "OPTIMIZE"
     assert category == ""
+    assert methodology["sample_quality"]["gates"]["positive_expectancy"] is True

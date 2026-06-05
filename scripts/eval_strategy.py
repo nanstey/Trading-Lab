@@ -39,34 +39,37 @@ def decide(
     n_trades: int,
     pnl: float = 0.0,
     min_trades: int = 30,
-) -> tuple[str, str]:
-    """
-    Return (new_state, rejection_category_or_empty).
-
-    For binary-arb strategies the cash-equity Sharpe is misleading (it dips
-    as capital is deployed and never recovers because the arb's $1 payoff
-    is at resolution, not in-window). We use PnL as the primary signal and
-    treat the Sharpe band as a secondary filter only when PnL is positive.
-    """
+    *,
+    expectancy_usdc: float = 0.0,
+    fill_rate: float = 0.0,
+    n_orders: int = 0,
+    n_fills: int = 0,
+    n_markets: int = 1,
+    n_markets_with_fills: int = 1,
+    min_fill_rate: float = 0.05,
+    min_markets_with_fills: int = 2,
+) -> tuple[str, str, dict]:
+    """Return (new_state, rejection_category_or_empty, methodology)."""
     from trading_lab.agent.lifecycle import State
+    from trading_lab.research.eval_methodology import assess_backtest
 
-    if n_trades < min_trades:
-        return State.REJECTED.value, "insufficient_trades"
-    if pnl < 0:
-        return State.REJECTED.value, "unprofitable"
-    # PnL is positive — sort by sharpe band, but be lenient on the cash-equity
-    # Sharpe signal for hold-to-resolution strategies.
-    if pnl > 0 and sharpe < 0 and n_trades >= max(100, min_trades * 3):
-        return State.OPTIMIZE.value, ""
-    if sharpe < 0.5:
-        return State.SHELVED.value, "marginal_is"
-    if sharpe < 1.0:
-        if abs(max_dd_pct) > 25:
-            return State.REJECTED.value, "high_dd"
-        return State.SHELVED.value, "marginal_is"
-    if abs(max_dd_pct) > 20:
-        return State.REJECTED.value, "high_dd"
-    return State.OPTIMIZE.value, ""
+    decision = assess_backtest(
+        state_enum=State,
+        sharpe=sharpe,
+        max_dd_pct=max_dd_pct,
+        n_trades=n_trades,
+        pnl_usdc=pnl,
+        expectancy_usdc=expectancy_usdc,
+        fill_rate=fill_rate,
+        n_orders=n_orders,
+        n_fills=n_fills,
+        n_markets=n_markets,
+        n_markets_with_fills=n_markets_with_fills,
+        min_trades=min_trades,
+        min_fill_rate=min_fill_rate,
+        min_markets_with_fills=min_markets_with_fills,
+    )
+    return decision.new_state, decision.rejection_category, decision.methodology
 
 
 def main() -> int:
@@ -83,6 +86,18 @@ def main() -> int:
     )
     p.add_argument(
         "--db", type=Path, default=Path("research/experiments.db"),
+    )
+    p.add_argument(
+        "--min-fill-rate",
+        type=float,
+        default=0.05,
+        help="Shelf as thin_execution when fill_rate is below this threshold and orders were placed.",
+    )
+    p.add_argument(
+        "--min-markets-with-fills",
+        type=int,
+        default=2,
+        help="When evaluating multi-market portfolios, shelf as insufficient_breadth below this many filled markets.",
     )
     p.add_argument(
         "--no-transition",
@@ -149,6 +164,12 @@ def main() -> int:
     n_trades = summary["aggregate_n_fills"]
     pnl = summary["aggregate_pnl_usdc"]
     sharpe = summary["mean_sharpe"]
+    fill_rate = float(summary.get("aggregate_fill_rate") or (summary["aggregate_n_fills"] / max(summary["aggregate_n_orders"], 1)))
+    expectancy_usdc = float(summary.get("aggregate_expectancy_usdc", 0.0))
+    n_orders = int(summary.get("aggregate_n_orders", 0))
+    n_fills = int(summary.get("aggregate_n_fills", 0))
+    n_markets = int(summary.get("n_markets", len(summary.get("per_market", []))))
+    n_markets_with_fills = int(summary.get("n_markets_with_fills", sum(1 for m in summary["per_market"] if int(m.get("n_fills", 0)) > 0)))
     # Max DD over the per-market dimension (max drawdown among per-market values)
     max_dd = min(
         (m["max_drawdown_pct"] for m in summary["per_market"]), default=0.0
@@ -205,9 +226,20 @@ def main() -> int:
     )
     budget.consume("backtests", db_path=args.db)
 
-    new_state, category = decide(
-        float(sharpe), float(max_dd), int(n_trades), pnl=float(pnl),
+    new_state, category, methodology = decide(
+        float(sharpe),
+        float(max_dd),
+        int(n_trades),
+        pnl=float(pnl),
         min_trades=args.min_trades_floor,
+        expectancy_usdc=float(expectancy_usdc),
+        fill_rate=float(fill_rate),
+        n_orders=int(n_orders),
+        n_fills=int(n_fills),
+        n_markets=int(n_markets),
+        n_markets_with_fills=int(n_markets_with_fills),
+        min_fill_rate=float(args.min_fill_rate),
+        min_markets_with_fills=int(args.min_markets_with_fills),
     )
     out = {
         "ok": True,
@@ -217,6 +249,13 @@ def main() -> int:
         "pnl_usdc": pnl,
         "max_dd_pct": max_dd,
         "n_trades": n_trades,
+        "expectancy_usdc": expectancy_usdc,
+        "fill_rate": fill_rate,
+        "n_orders": n_orders,
+        "n_fills": n_fills,
+        "n_markets": n_markets,
+        "n_markets_with_fills": n_markets_with_fills,
+        "methodology": methodology,
         "decision_new_state": new_state,
         "decision_rejection_category": category,
         "applied": False,
@@ -226,7 +265,10 @@ def main() -> int:
             lifecycle.transition(
                 slug=args.slug,
                 to_state=new_state,
-                reason=f"eval: sharpe={sharpe:.3f} dd={max_dd:.1f}% trades={n_trades}",
+                reason=(
+                    f"eval: sharpe={sharpe:.3f} dd={max_dd:.1f}% trades={n_trades} "
+                    f"exp={expectancy_usdc:.4f} fill={fill_rate:.3f}"
+                ),
                 actor=args.actor,
                 rejection_category=category or None,
                 db_path=args.db,

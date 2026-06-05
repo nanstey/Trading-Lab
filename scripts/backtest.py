@@ -140,13 +140,18 @@ def main() -> int:
         print(f"Total orders:       {summary['aggregate_n_orders']}")
         print(f"Total fills:        {summary['aggregate_n_fills']}")
         print(f"Mean Sharpe:        {summary['mean_sharpe']:.3f}")
+        print(f"Expectancy/fill:    ${summary.get('aggregate_expectancy_usdc', 0.0):,.4f}")
+        print(f"Aggregate fill rate:{summary.get('aggregate_fill_rate', 0.0):.3f}")
         print(f"Markets backtested: {len(summary['per_market'])}")
+        print(f"Markets w/ fills:   {summary.get('n_markets_with_fills', 0)}")
         for m in summary["per_market"]:
             print(
                 f"  - {m['condition_id'][:14]}... "
                 f"ticks={m['n_trade_ticks']} orders={m['n_orders']} "
                 f"fills={m['n_fills']} pnl=${m['pnl_usdc']:,.2f} "
-                f"sharpe={m['sharpe']:.2f} dd={m['max_drawdown_pct']:.1f}%"
+                f"sharpe={m['sharpe']:.2f} dd={m['max_drawdown_pct']:.1f}% "
+                f"exp=${m.get('expectancy_usdc', 0.0):.4f} pf={m.get('profit_factor', 0.0):.2f} "
+                f"ls={m.get('longest_losing_streak', 0)}"
             )
             print(f"    {m['question'][:80]}")
     return 0

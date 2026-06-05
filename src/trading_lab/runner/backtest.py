@@ -51,6 +51,14 @@ class MarketBacktestResult:
     max_drawdown_pct: float
     fill_rate: float
     kill_switch_triggered: bool
+    n_pair_trades: int = 0
+    expectancy_usdc: float = 0.0
+    win_rate: float = 0.0
+    trade_sharpe: float = 0.0
+    profit_factor: float = 0.0
+    avg_win_usdc: float = 0.0
+    avg_loss_usdc: float = 0.0
+    longest_losing_streak: int = 0
 
 
 @dataclass
@@ -60,6 +68,11 @@ class BacktestRunResult:
     aggregate_n_fills: int
     aggregate_n_orders: int
     mean_sharpe: float
+    aggregate_expectancy_usdc: float = 0.0
+    aggregate_fill_rate: float = 0.0
+    n_markets: int = 0
+    n_markets_with_fills: int = 0
+    max_longest_losing_streak: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +80,11 @@ class BacktestRunResult:
             "aggregate_n_fills": self.aggregate_n_fills,
             "aggregate_n_orders": self.aggregate_n_orders,
             "mean_sharpe": self.mean_sharpe,
+            "aggregate_expectancy_usdc": self.aggregate_expectancy_usdc,
+            "aggregate_fill_rate": self.aggregate_fill_rate,
+            "n_markets": self.n_markets,
+            "n_markets_with_fills": self.n_markets_with_fills,
+            "max_longest_losing_streak": self.max_longest_losing_streak,
             "per_market": [
                 {
                     "condition_id": r.condition_id,
@@ -79,6 +97,14 @@ class BacktestRunResult:
                     "max_drawdown_pct": r.max_drawdown_pct,
                     "fill_rate": r.fill_rate,
                     "kill_switch_triggered": r.kill_switch_triggered,
+                    "n_pair_trades": r.n_pair_trades,
+                    "expectancy_usdc": r.expectancy_usdc,
+                    "win_rate": r.win_rate,
+                    "trade_sharpe": r.trade_sharpe,
+                    "profit_factor": r.profit_factor,
+                    "avg_win_usdc": r.avg_win_usdc,
+                    "avg_loss_usdc": r.avg_loss_usdc,
+                    "longest_losing_streak": r.longest_losing_streak,
                 }
                 for r in self.per_market
             ],
@@ -264,6 +290,14 @@ class BacktestRunner:
             max_drawdown_pct=float(pm.get("max_drawdown_pct", 0.0)),
             fill_rate=float(pm.get("fill_rate", 0.0)),
             kill_switch_triggered=bool(pm.get("kill_switch_triggered", False)),
+            n_pair_trades=int(pm.get("n_pair_trades", 0)),
+            expectancy_usdc=float(pm.get("expectancy_usdc", 0.0)),
+            win_rate=float(pm.get("win_rate", 0.0)),
+            trade_sharpe=float(pm.get("trade_sharpe", 0.0)),
+            profit_factor=float(pm.get("profit_factor", 0.0)),
+            avg_win_usdc=float(pm.get("avg_win_usdc", 0.0)),
+            avg_loss_usdc=float(pm.get("avg_loss_usdc", 0.0)),
+            longest_losing_streak=int(pm.get("longest_losing_streak", 0)),
         )
 
     # ------------------------------------------------------------------
@@ -333,6 +367,14 @@ class BacktestRunner:
                 max_drawdown_pct=0.0,
                 fill_rate=0.0,
                 kill_switch_triggered=False,
+                n_pair_trades=0,
+                expectancy_usdc=0.0,
+                win_rate=0.0,
+                trade_sharpe=0.0,
+                profit_factor=0.0,
+                avg_win_usdc=0.0,
+                avg_loss_usdc=0.0,
+                longest_losing_streak=0,
             )
 
         # NautilusTrader's Rust logger is a process-global singleton; passing
@@ -482,6 +524,8 @@ class BacktestRunner:
         # monotonically as capital is deployed and never recovers in
         # hold-to-resolution strategies).
         per_pair_pnls = self._per_pair_pnl_series(orders_df)
+        trade_metrics = self._trade_metrics(per_pair_pnls)
+        longest_losing_streak = _longest_losing_streak(per_pair_pnls)
         if per_pair_pnls:
             import math
             mean = sum(per_pair_pnls) / len(per_pair_pnls)
@@ -525,7 +569,20 @@ class BacktestRunner:
             max_drawdown_pct=max_dd_pct,
             fill_rate=(n_fills / n_orders) if n_orders else 0.0,
             kill_switch_triggered=False,
+            n_pair_trades=int(trade_metrics.get("n_trades", 0)),
+            expectancy_usdc=float(trade_metrics.get("expectancy", 0.0)),
+            win_rate=float(trade_metrics.get("win_rate", 0.0)),
+            trade_sharpe=float(trade_metrics.get("trade_sharpe", 0.0)),
+            profit_factor=float(trade_metrics.get("profit_factor", 0.0)),
+            avg_win_usdc=float(trade_metrics.get("avg_win", 0.0)),
+            avg_loss_usdc=float(trade_metrics.get("avg_loss", 0.0)),
+            longest_losing_streak=int(longest_losing_streak),
         )
+
+    def _trade_metrics(self, per_pair_pnls: list[float]) -> dict[str, float]:
+        from trading_lab.research.metrics import compute_trade_metrics
+
+        return compute_trade_metrics(per_pair_pnls)
 
     def _per_pair_pnl_series(self, orders_df: pd.DataFrame) -> list[float]:
         """
@@ -748,20 +805,48 @@ def _parse_hypothesis(path: Path) -> tuple[dict[str, Any] | None, str]:
 
 def _aggregate(results: list[MarketBacktestResult]) -> BacktestRunResult:
     if not results:
-        return BacktestRunResult(per_market=[], aggregate_pnl_usdc=0.0,
-                                 aggregate_n_fills=0, aggregate_n_orders=0,
-                                 mean_sharpe=0.0)
+        return BacktestRunResult(
+            per_market=[],
+            aggregate_pnl_usdc=0.0,
+            aggregate_n_fills=0,
+            aggregate_n_orders=0,
+            mean_sharpe=0.0,
+            aggregate_expectancy_usdc=0.0,
+            aggregate_fill_rate=0.0,
+            n_markets=0,
+            n_markets_with_fills=0,
+            max_longest_losing_streak=0,
+        )
     total_pnl = sum(r.pnl_usdc for r in results)
     total_fills = sum(r.n_fills for r in results)
     total_orders = sum(r.n_orders for r in results)
+    total_pair_trades = sum(r.n_pair_trades for r in results)
     mean_sharpe = sum(r.sharpe for r in results) / len(results)
+    n_markets_with_fills = sum(1 for r in results if r.n_fills > 0)
     return BacktestRunResult(
         per_market=results,
         aggregate_pnl_usdc=total_pnl,
         aggregate_n_fills=total_fills,
         aggregate_n_orders=total_orders,
         mean_sharpe=mean_sharpe,
+        aggregate_expectancy_usdc=(total_pnl / total_pair_trades) if total_pair_trades else 0.0,
+        aggregate_fill_rate=(total_fills / total_orders) if total_orders else 0.0,
+        n_markets=len(results),
+        n_markets_with_fills=n_markets_with_fills,
+        max_longest_losing_streak=max((r.longest_losing_streak for r in results), default=0),
     )
+
+
+def _longest_losing_streak(per_trade_pnls: list[float]) -> int:
+    longest = 0
+    current = 0
+    for pnl in per_trade_pnls:
+        if pnl < 0:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
 
 
 def _coerce_dt(d: datetime | str) -> datetime:
