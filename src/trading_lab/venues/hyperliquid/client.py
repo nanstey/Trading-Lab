@@ -24,6 +24,7 @@ from trading_lab.venues.hyperliquid.auth import (
     derive_address,
     sign_l1_action,
 )
+from trading_lab.venues.hyperliquid.outcomes import outcome_asset_id, parse_outcome_coin
 
 log = structlog.get_logger(__name__)
 
@@ -61,6 +62,14 @@ class HyperliquidRestClient:
         """Fetch exchange metadata (assets, lot sizes, etc.)."""
         return await self._info({"type": "meta"})
 
+    async def get_spot_meta(self) -> dict[str, Any]:
+        """Fetch spot metadata (pairs, token indexes)."""
+        return await self._info({"type": "spotMeta"})
+
+    async def get_outcome_meta(self) -> dict[str, Any]:
+        """Fetch outcome-market metadata (outcomes, questions, side specs)."""
+        return await self._info({"type": "outcomeMeta"})
+
     async def get_all_mids(self) -> dict[str, str]:
         """Fetch mid prices for all spot/perp instruments."""
         return await self._info({"type": "allMids"})
@@ -97,51 +106,69 @@ class HyperliquidRestClient:
         size: float,
         order_type: dict[str, Any] | None = None,
         reduce_only: bool = False,
+        cloid: str | None = None,
     ) -> dict[str, Any]:
         """
-        Place a limit or market order.
+        Place a limit or market order by public coin symbol.
 
-        Parameters
-        ----------
-        coin : str
-            Asset name (e.g. "BTC", "ETH").
-        is_buy : bool
-            True for buy/long, False for sell/short.
-        price : float
-            Limit price (ignored for market orders).
-        size : float
-            Order size in base asset units.
-        order_type : dict, optional
-            {"limit": {"tif": "Gtc"}} or {"market": {}}. Defaults to GTC limit.
-        reduce_only : bool
-            True to only reduce existing position.
+        Supports perp coins (e.g. ``BTC``), spot-style pair coins (e.g. ``@107``),
+        and outcome coins (e.g. ``#1010``).
         """
+        asset = await self._coin_to_asset_index(coin)
+        return await self.place_order_asset(
+            asset=asset,
+            is_buy=is_buy,
+            price=price,
+            size=size,
+            order_type=order_type,
+            reduce_only=reduce_only,
+            cloid=cloid,
+        )
+
+    async def place_order_asset(
+        self,
+        asset: int,
+        is_buy: bool,
+        price: float,
+        size: float,
+        order_type: dict[str, Any] | None = None,
+        reduce_only: bool = False,
+        cloid: str | None = None,
+    ) -> dict[str, Any]:
+        """Place a limit or market order by explicit Hyperliquid asset ID."""
         if order_type is None:
             order_type = {"limit": {"tif": "Gtc"}}
 
+        order: dict[str, Any] = {
+            "a": asset,
+            "b": is_buy,
+            "p": self._format_price(price),
+            "s": self._format_size(size),
+            "r": reduce_only,
+            "t": order_type,
+        }
+        if cloid:
+            order["c"] = cloid
+
         action = {
             "type": "order",
-            "orders": [
-                {
-                    "a": await self._coin_to_asset_index(coin),
-                    "b": is_buy,
-                    "p": self._format_price(price),
-                    "s": self._format_size(size),
-                    "r": reduce_only,
-                    "t": order_type,
-                }
-            ],
+            "orders": [order],
             "grouping": "na",
         }
         return await self._exchange(action)
 
     async def cancel_order(self, coin: str, order_id: int) -> dict[str, Any]:
-        """Cancel a specific order by its order ID."""
+        """Cancel a specific order by its order ID and public coin symbol."""
+        asset = await self._coin_to_asset_index(coin)
+        return await self.cancel_order_asset(asset=asset, order_id=order_id)
+
+    async def cancel_order_asset(self, asset: int, order_id: int) -> dict[str, Any]:
+        """Cancel a specific order by explicit Hyperliquid asset ID."""
         action = {
             "type": "cancel",
             "cancels": [
                 {
-                    "a": await self._coin_to_asset_index(coin),
+                    "a": asset,
                     "o": order_id,
                 }
             ],
@@ -170,6 +197,11 @@ class HyperliquidRestClient:
     _meta_cache: dict[str, Any] | None = None
 
     async def _coin_to_asset_index(self, coin: str) -> int:
+        if coin.startswith("#"):
+            outcome_id, side = parse_outcome_coin(coin)
+            return outcome_asset_id(outcome_id, side)
+        if coin.startswith("@"):
+            return 10_000 + int(coin[1:])
         if self._meta_cache is None:
             self._meta_cache = await self.get_meta()
         for i, asset in enumerate(self._meta_cache.get("universe", [])):
