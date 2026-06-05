@@ -127,10 +127,10 @@ def test_readiness_report_distinguishes_perp_vs_outcome_support(tmp_path: Path) 
     assert perp["ok"] is True
     assert perp["spec"]["hyperliquid"]["kind"] == "perp"
     assert perp["readiness"]["develop"] is True
-    assert perp["readiness"]["backtest"] is False
+    assert perp["readiness"]["backtest"] is True
     assert perp["readiness"]["paper_trade"] is False
-    assert "dual_venue_backtest_runner_missing" in perp["gaps"]
     assert "dual_venue_paper_runner_missing" in perp["gaps"]
+    assert "dual_venue_backtest_runner_missing" not in perp["gaps"]
 
     assert outcome["ok"] is True
     assert outcome["spec"]["hyperliquid"]["kind"] == "outcome"

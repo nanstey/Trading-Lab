@@ -16,10 +16,10 @@ def build_readiness_report(path: str | Path) -> dict:
     errors = validate_cross_venue_spec(spec)
 
     gaps: list[str] = []
+    backtest_ready = spec.hyperliquid.kind == "perp" and not errors
     if spec.hyperliquid.kind == "perp":
         gaps.extend(
             [
-                "dual_venue_backtest_runner_missing",
                 "dual_venue_paper_runner_missing",
                 "cross_venue_fair_value_model_missing",
                 "cross_venue_legging_risk_state_machine_missing",
@@ -42,14 +42,14 @@ def build_readiness_report(path: str | Path) -> dict:
         "spec": spec.to_dict(),
         "readiness": {
             "develop": not errors,
-            "backtest": False,
+            "backtest": backtest_ready,
             "paper_trade": False,
             "live_trade": False,
         },
         "gaps": gaps,
         "notes": [
-            "Current repo has single-venue backtest and paper runners only.",
-            "Cross-venue hypotheses need a dual-venue runner plus synchronized execution/risk logic before paper trading.",
+            "Perp cross-venue hypotheses now have synchronized timeline/backtest diagnostics.",
+            "Cross-venue hypotheses still need execution/risk logic before paper trading.",
         ],
     }
 
