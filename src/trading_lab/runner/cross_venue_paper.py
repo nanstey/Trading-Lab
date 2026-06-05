@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,8 +49,37 @@ class CrossVenueObservePlan:
         }
 
 
+@dataclass(frozen=True)
+class CrossVenueObserveSessionSummary:
+    slug: str
+    duration_secs: float
+    instrument_ids: list[str]
+    started: bool
+    stopped: bool
+    polymarket_token_ids: list[str]
+    hyperliquid_symbol: str
+
+    @property
+    def instrument_count(self) -> int:
+        return len(self.instrument_ids)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "duration_secs": self.duration_secs,
+            "instrument_count": self.instrument_count,
+            "instrument_ids": list(self.instrument_ids),
+            "started": self.started,
+            "stopped": self.stopped,
+            "subscriptions": {
+                "polymarket": list(self.polymarket_token_ids),
+                "hyperliquid": [self.hyperliquid_symbol] if self.hyperliquid_symbol else [],
+            },
+        }
+
+
 class CrossVenueObserveRunner:
-    """Prepare a bounded observe-only dual-venue paper session."""
+    """Prepare or run a bounded observe-only dual-venue paper session."""
 
     def __init__(self, *, config, spec: CrossVenueSpec, duration_secs: int = 300) -> None:
         self._config = config
@@ -57,22 +88,120 @@ class CrossVenueObserveRunner:
 
     def build_plan(self) -> CrossVenueObservePlan:
         node_config = build_cross_venue_paper_node_config(config=self._config, spec=self._spec)
-        pm_yes = make_instrument(self._spec.polymarket.yes_token_id, self._spec.polymarket.condition_id)
-        pm_no = make_instrument(self._spec.polymarket.no_token_id, self._spec.polymarket.condition_id)
-        hl_symbol = self._spec.hyperliquid.symbol or ""
-        hl_instr = make_hl_perpetual(hl_symbol) if hl_symbol else None
-        instrument_ids = [str(pm_yes.id), str(pm_no.id)]
-        if hl_instr is not None:
-            instrument_ids.append(str(hl_instr.id))
+        instruments = self._build_instruments()
         return CrossVenueObservePlan(
             slug=self._spec.slug,
             spec=self._spec,
             node_config=node_config,
             duration_secs=self._duration_secs,
             polymarket_token_ids=[self._spec.polymarket.yes_token_id, self._spec.polymarket.no_token_id],
-            hyperliquid_symbol=hl_symbol,
-            instrument_ids=instrument_ids,
+            hyperliquid_symbol=self._spec.hyperliquid.symbol or "",
+            instrument_ids=[str(instr.id) for instr in instruments],
         )
+
+    def run(self, *, node=None) -> CrossVenueObserveSessionSummary:
+        plan = self.build_plan()
+        instruments = self._build_instruments()
+        node = node or self._make_node(plan.node_config)
+        node.add_data_client_factory("POLYMARKET", self._polymarket_data_client_factory())
+        node.add_data_client_factory("HYPERLIQUID", self._hyperliquid_data_client_factory())
+        node.build()
+
+        pm_data_client = self._find_data_client(node, "POLYMARKET")
+        if pm_data_client is not None and hasattr(pm_data_client, "register_tokens"):
+            pm_data_client.register_tokens({token_id: token_id for token_id in plan.polymarket_token_ids})
+
+        strategy = self._find_strategy(node, "CrossVenueObserveStrategy")
+        for instrument in instruments:
+            try:
+                node.cache.add_instrument(instrument)
+            except Exception:
+                pass
+            if strategy is not None and hasattr(strategy, "register_instrument"):
+                strategy.register_instrument(instrument.id)
+
+        started = False
+        stopped = False
+        start_ts = time.monotonic()
+        if self._duration_secs and self._duration_secs > 0:
+            def _timer() -> None:
+                nonlocal stopped
+                time.sleep(self._duration_secs)
+                try:
+                    node.stop()
+                    stopped = True
+                except Exception:
+                    pass
+
+            threading.Thread(target=_timer, daemon=True, name="cross-venue-observe-timer").start()
+
+        try:
+            node.run()
+            started = True
+        except KeyboardInterrupt:
+            try:
+                node.stop()
+                stopped = True
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        return CrossVenueObserveSessionSummary(
+            slug=plan.slug,
+            duration_secs=round(time.monotonic() - start_ts, 2),
+            instrument_ids=list(plan.instrument_ids),
+            started=started,
+            stopped=stopped,
+            polymarket_token_ids=list(plan.polymarket_token_ids),
+            hyperliquid_symbol=plan.hyperliquid_symbol,
+        )
+
+    def _build_instruments(self) -> list[Any]:
+        pm_yes = make_instrument(self._spec.polymarket.yes_token_id, self._spec.polymarket.condition_id)
+        pm_no = make_instrument(self._spec.polymarket.no_token_id, self._spec.polymarket.condition_id)
+        instruments: list[Any] = [pm_yes, pm_no]
+        hl_symbol = self._spec.hyperliquid.symbol or ""
+        if hl_symbol:
+            instruments.append(make_hl_perpetual(hl_symbol))
+        return instruments
+
+    def _make_node(self, node_config: TradingNodeConfig):
+        from nautilus_trader.live.node import TradingNode
+
+        return TradingNode(config=node_config)
+
+    def _polymarket_data_client_factory(self):
+        from trading_lab.venues.polymarket.factory import PolymarketLiveDataClientFactory
+
+        return PolymarketLiveDataClientFactory
+
+    def _hyperliquid_data_client_factory(self):
+        from trading_lab.venues.hyperliquid.factory import HyperliquidLiveDataClientFactory
+
+        return HyperliquidLiveDataClientFactory
+
+    def _find_strategy(self, node, class_name: str):
+        try:
+            strategies = list(node.trader.strategies())
+        except Exception:
+            return None
+        for strategy in strategies:
+            if type(strategy).__name__ == class_name:
+                return strategy
+        if len(strategies) == 1:
+            return strategies[0]
+        return None
+
+    def _find_data_client(self, node, venue_str: str):
+        if hasattr(node, "data_clients"):
+            return node.data_clients.get(venue_str)
+        try:
+            from nautilus_trader.model.identifiers import ClientId
+
+            return node.kernel.data_engine._clients[ClientId(venue_str)]  # type: ignore[attr-defined]
+        except Exception:
+            return None
 
 
 
