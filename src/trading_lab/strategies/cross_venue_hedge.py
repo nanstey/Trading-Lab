@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
 
 import structlog
 from nautilus_trader.config import StrategyConfig
@@ -11,6 +10,7 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.trading.strategy import Strategy
 
 from trading_lab.research.cross_venue_fair_value import AnchoredFairValueModel
+from trading_lab.strategies.cross_venue_state import CrossVenueLeggingStateMachine
 
 log = structlog.get_logger(__name__)
 
@@ -36,7 +36,7 @@ class CrossVenueHedgeConfig(StrategyConfig, frozen=True):
 
 
 class CrossVenueHedgeStrategy(Strategy):
-    """Config-driven HL/PM cross-venue scaffold with deterministic fair-value model."""
+    """Config-driven HL/PM cross-venue scaffold with deterministic fair-value and hedge-failure state."""
 
     def __init__(self, config: CrossVenueHedgeConfig) -> None:
         super().__init__(config)
@@ -45,6 +45,10 @@ class CrossVenueHedgeStrategy(Strategy):
         self._instruments: list[InstrumentId] = []
         self._touches: dict[str, tuple[float | None, float | None]] = {}
         self._trade_prices: dict[str, float] = {}
+        self._yes_instrument_id = None
+        self._no_instrument_id = None
+        self._hl_instrument_id = None
+        self._legging = CrossVenueLeggingStateMachine()
         self._fair_value_model = AnchoredFairValueModel(
             anchor_price=Decimal(str(config.fair_value_anchor_price)),
             scale=Decimal(str(config.fair_value_scale)),
@@ -58,6 +62,15 @@ class CrossVenueHedgeStrategy(Strategy):
             self._pending_instruments.append(instrument_id)
             return
         self._activate_instrument(instrument_id)
+
+    def register_cross_venue_legs(self, *, yes_instrument_id, no_instrument_id, hl_instrument_id) -> None:
+        self._yes_instrument_id = yes_instrument_id
+        self._no_instrument_id = no_instrument_id
+        self._hl_instrument_id = hl_instrument_id
+
+    def on_hyperliquid_hedge_rejected(self, reason: str) -> None:
+        self._legging.on_hyperliquid_reject(reason=reason)
+        log.warning("cross-venue hedge rejected", reason=reason, needs_polymarket_flatten=self._legging.needs_polymarket_flatten)
 
     def on_start(self) -> None:
         for instrument_id in self._pending_instruments:

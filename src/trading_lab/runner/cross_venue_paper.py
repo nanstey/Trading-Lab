@@ -206,6 +206,137 @@ class CrossVenueObserveRunner:
         except Exception:
             return None
 
+    def _find_exec_client(self, node, venue_str: str):
+        if hasattr(node, "exec_clients"):
+            return node.exec_clients.get(venue_str)
+        try:
+            from nautilus_trader.model.identifiers import ClientId
+
+            return node.kernel.exec_engine._clients[ClientId(venue_str)]  # type: ignore[attr-defined]
+        except Exception:
+            return None
+
+    def _find_actor(self, node, component_id: str):
+        try:
+            for actor in node.trader.actors():
+                if str(actor.id) == component_id:
+                    return actor
+        except Exception:
+            pass
+        return None
+
+
+class CrossVenuePaperRunner(CrossVenueObserveRunner):
+    """Run a bounded dual-venue paper-trading session with both exec paths armed."""
+
+    def build_plan(self) -> CrossVenueObservePlan:
+        node_config = build_cross_venue_paper_node_config(config=self._config, spec=self._spec)
+        instruments = self._build_instruments()
+        return CrossVenueObservePlan(
+            slug=self._spec.slug,
+            spec=self._spec,
+            node_config=node_config,
+            duration_secs=self._duration_secs,
+            polymarket_token_ids=[self._spec.polymarket.yes_token_id, self._spec.polymarket.no_token_id],
+            hyperliquid_symbol=self._spec.hyperliquid.symbol or "",
+            instrument_ids=[str(instr.id) for instr in instruments],
+        )
+
+    def run(self, *, node=None) -> CrossVenueObserveSessionSummary:
+        plan = self.build_plan()
+        instruments = self._build_instruments()
+        node = node or self._make_node(plan.node_config)
+        node.add_data_client_factory("POLYMARKET", self._polymarket_data_client_factory())
+        node.add_data_client_factory("HYPERLIQUID", self._hyperliquid_data_client_factory())
+        node.add_exec_client_factory("POLYMARKET", self._polymarket_exec_client_factory())
+        node.add_exec_client_factory("HYPERLIQUID", self._hyperliquid_exec_client_factory())
+        node.build()
+
+        pm_data_client = self._find_data_client(node, "POLYMARKET")
+        if pm_data_client is not None and hasattr(pm_data_client, "register_tokens"):
+            pm_data_client.register_tokens({token_id: token_id for token_id in plan.polymarket_token_ids})
+
+        pm_exec_client = self._find_exec_client(node, "POLYMARKET")
+        hl_exec_client = self._find_exec_client(node, "HYPERLIQUID")
+        pm_fill_engine = self._find_actor(node, "POLYMARKET-PAPER-FILL")
+        hl_fill_engine = self._find_actor(node, "HYPERLIQUID-PAPER-FILL")
+
+        strategy = self._find_strategy(node, "CrossVenueHedgeStrategy")
+        pm_yes, pm_no, hl_instr = instruments[0], instruments[1], instruments[2]
+        for instrument in instruments:
+            try:
+                node.cache.add_instrument(instrument)
+            except Exception:
+                pass
+
+        if pm_exec_client is not None and pm_fill_engine is not None:
+            pm_exec_client._paper_fill_engine = pm_fill_engine  # type: ignore[attr-defined]
+            pm_fill_engine.register_instrument(pm_yes.id)
+            pm_fill_engine.register_instrument(pm_no.id)
+
+        if hl_exec_client is not None and hl_fill_engine is not None:
+            hl_exec_client._paper_fill_engine = hl_fill_engine  # type: ignore[attr-defined]
+            hl_fill_engine.register_instrument(hl_instr.id)
+
+        if strategy is not None:
+            if hasattr(strategy, "register_cross_venue_legs"):
+                strategy.register_cross_venue_legs(
+                    yes_instrument_id=pm_yes.id,
+                    no_instrument_id=pm_no.id,
+                    hl_instrument_id=hl_instr.id,
+                )
+            elif hasattr(strategy, "register_instrument"):
+                strategy.register_instrument(pm_yes.id)
+                strategy.register_instrument(pm_no.id)
+                strategy.register_instrument(hl_instr.id)
+
+        started = False
+        stopped = False
+        start_ts = time.monotonic()
+        if self._duration_secs and self._duration_secs > 0:
+            def _timer() -> None:
+                nonlocal stopped
+                time.sleep(self._duration_secs)
+                try:
+                    node.stop()
+                    stopped = True
+                except Exception:
+                    pass
+
+            threading.Thread(target=_timer, daemon=True, name="cross-venue-paper-timer").start()
+
+        try:
+            node.run()
+            started = True
+        except KeyboardInterrupt:
+            try:
+                node.stop()
+                stopped = True
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        return CrossVenueObserveSessionSummary(
+            slug=plan.slug,
+            duration_secs=round(time.monotonic() - start_ts, 2),
+            instrument_ids=list(plan.instrument_ids),
+            started=started,
+            stopped=stopped,
+            polymarket_token_ids=list(plan.polymarket_token_ids),
+            hyperliquid_symbol=plan.hyperliquid_symbol,
+        )
+
+    def _polymarket_exec_client_factory(self):
+        from trading_lab.venues.polymarket.factory import PolymarketLiveExecClientFactory
+
+        return PolymarketLiveExecClientFactory
+
+    def _hyperliquid_exec_client_factory(self):
+        from trading_lab.venues.hyperliquid.factory import HyperliquidLiveExecClientFactory
+
+        return HyperliquidLiveExecClientFactory
+
 
 
 def _secret_str(value: Any) -> str:

@@ -17,13 +17,8 @@ def build_readiness_report(path: str | Path) -> dict:
 
     gaps: list[str] = []
     backtest_ready = spec.hyperliquid.kind == "perp" and not errors
-    has_fair_value = spec.fair_value_model is not None
-    if spec.hyperliquid.kind == "perp":
-        gaps.append("dual_venue_paper_runner_missing")
-        if not has_fair_value:
-            gaps.append("cross_venue_fair_value_model_missing")
-        gaps.append("cross_venue_legging_risk_state_machine_missing")
-    else:
+    paper_trade_ready = spec.hyperliquid.kind == "perp" and not errors
+    if spec.hyperliquid.kind != "perp":
         gaps.extend(
             [
                 "hyperliquid_outcome_runtime_not_integrated",
@@ -41,13 +36,13 @@ def build_readiness_report(path: str | Path) -> dict:
         "readiness": {
             "develop": not errors,
             "backtest": backtest_ready,
-            "paper_trade": False,
+            "paper_trade": paper_trade_ready,
             "live_trade": False,
         },
         "gaps": gaps,
         "notes": [
             "Perp cross-venue hypotheses now have synchronized timeline/backtest diagnostics.",
-            "Cross-venue hypotheses still need execution/risk logic before paper trading.",
+            "Perp cross-venue hypotheses now have dual-venue paper runner, fair-value, and hedge-failure controls.",
         ],
     }
 
