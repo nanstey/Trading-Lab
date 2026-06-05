@@ -120,3 +120,35 @@ def test_autocommit_new_files_noops_without_new_files(monkeypatch) -> None:
 
     assert ok is True
     assert detail is None
+
+
+
+def test_optimizer_headline_prefers_best_summary() -> None:
+    got = hermes_remaining_crons._optimizer_headline(
+        {
+            "decision_new_state": "PAPER_READY",
+            "best_summary": {
+                "recent_oos_pnl": 12.5,
+                "methodology_score": 3456789.0,
+            },
+            "best_recent_oos_pnl": 3.0,
+        }
+    )
+    assert got["state"] == "PAPER_READY"
+    assert got["edge_value"] == 12.5
+    assert got["methodology_score"] == 3456789.0
+
+
+
+def test_optimizer_headline_falls_back_to_legacy_fields() -> None:
+    got = hermes_remaining_crons._optimizer_headline(
+        {
+            "decision_state": "SHELVED",
+            "decision_reason": "marginal_oos",
+            "best_oos_total_pnl": 44.0,
+        }
+    )
+    assert got["state"] == "SHELVED"
+    assert got["category"] == "marginal_oos"
+    assert got["edge_value"] == 44.0
+    assert got["methodology_score"] is None

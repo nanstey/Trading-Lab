@@ -164,6 +164,29 @@ def _run_with_retry(cmd: list[str], *, timeout: int, retries: int = 1) -> tuple[
     return last
 
 
+def _optimizer_headline(payload: dict[str, Any]) -> dict[str, Any]:
+    best = payload.get("best_summary") or {}
+    state = payload.get("decision_new_state") or payload.get("decision_state") or "?"
+    category = payload.get("decision_rejection_category") or payload.get("decision_reason") or ""
+    score = best.get("methodology_score", payload.get("best_methodology_score"))
+    edge = best.get(
+        "recent_oos_pnl",
+        best.get(
+            "oos_mean_pnl",
+            payload.get(
+                "best_recent_oos_pnl",
+                payload.get("best_oos_total_pnl", payload.get("best_recent_oos_sharpe", payload.get("best_oos_mean_sharpe", 0.0))),
+            ),
+        ),
+    )
+    return {
+        "state": state,
+        "category": category,
+        "methodology_score": float(score) if score is not None else None,
+        "edge_value": float(edge) if edge is not None else 0.0,
+    }
+
+
 def _snapshot_files(paths: list[str]) -> set[str]:
     snapshot: set[str] = set()
     for rel in paths:
@@ -427,14 +450,16 @@ def cron_research_optimize_queue() -> int:
     if not ok:
         print(f"optimize-queue: auto-commit failed ({detail})")
         return 1
-    recent_oos = float(
-        payload.get(
-            "best_recent_oos_pnl",
-            payload.get("best_oos_total_pnl", payload.get("best_recent_oos_sharpe", payload.get("best_oos_mean_sharpe", 0.0))),
-        )
-    )
+    headline = _optimizer_headline(payload)
     suffix = f", committed {detail[:7]}" if detail else ""
-    print(f"optimize-queue: {slug} -> {new_state} recent_oos={recent_oos:.2f}{suffix}")
+    score_text = ""
+    if headline["methodology_score"] is not None:
+        score_text = f" score={headline['methodology_score']:.1f}"
+    category_text = f" category={headline['category']}" if headline["category"] else ""
+    print(
+        f"optimize-queue: {slug} -> {headline['state']}"
+        f" edge={headline['edge_value']:.2f}{score_text}{category_text}{suffix}"
+    )
     return 0
 
 
