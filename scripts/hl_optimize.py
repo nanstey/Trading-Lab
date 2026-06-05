@@ -60,6 +60,10 @@ from trading_lab.data.hl_universe import (
     filter_by_tier,
     load_universe,
 )
+from trading_lab.research.optimizer_artifacts import (
+    default_output_path,
+    write_optimizer_artifact,
+)
 from trading_lab.research.overfitting import (
     deflated_sharpe_ratio,
     max_cv,
@@ -476,12 +480,12 @@ def main(argv: list[str] | None = None) -> int:
         "coverage": coverage_summary(windows),
         "all_runs": all_runs,
     }
-    output_path = args.output_file or Path("research/optimizer_outputs") / (
-        f"{args.slug}_{data_start.date().isoformat()}_{data_end.date().isoformat()}.json"
+    output_path = args.output_file or default_output_path(
+        slug=args.slug,
+        data_start=data_start.date().isoformat(),
+        data_end=data_end.date().isoformat(),
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(summary, indent=2, default=str) + "\n")
-    summary["output_file"] = str(output_path)
+    summary = write_optimizer_artifact(summary, output_path=output_path)
     print(json.dumps(summary, indent=2, default=str))
     return 0
 

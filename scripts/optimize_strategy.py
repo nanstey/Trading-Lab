@@ -46,6 +46,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from trading_lab.research.optimizer_artifacts import (
+    default_output_path,
+    write_optimizer_artifact,
+)
+
 log = logging.getLogger("optimize")
 
 
@@ -333,6 +338,12 @@ def main() -> int:
     p.add_argument(
         "--min-markets-with-fills", type=int, default=2,
         help="Methodology floor for breadth when evaluating multi-market runs.",
+    )
+    p.add_argument(
+        "--output-file",
+        type=Path,
+        default=None,
+        help="Optional explicit path for the JSON summary artifact",
     )
     p.add_argument(
         "--hypotheses-dir", type=Path, default=Path("research/hypotheses"),
@@ -674,6 +685,7 @@ def main() -> int:
     out = {
         "ok": True,
         "slug": args.slug,
+        "venue": "polymarket",
         "warnings": warnings,
         "grid_size": len(grid),
         "wf_candidates": len(wf_results),
@@ -707,12 +719,18 @@ def main() -> int:
         "decision_rejection_category": category,
         "applied": False,
     }
+    output_path = args.output_file or default_output_path(
+        slug=args.slug,
+        data_start=data_start.date().isoformat(),
+        data_end=data_end.date().isoformat(),
+    )
 
     # Don't apply the transition if grid was effectively non-parametric.
     if "grid_metrics_identical" in warnings:
         out["applied"] = False
         out["decision_new_state"] = "REJECTED"
         out["decision_rejection_category"] = "param_space_inert"
+        out = write_optimizer_artifact(out, output_path=output_path)
         print(json.dumps(out))
         return 0
 
@@ -736,6 +754,7 @@ def main() -> int:
         except Exception as exc:
             out["error"] = str(exc)
 
+    out = write_optimizer_artifact(out, output_path=output_path)
     print(json.dumps(out))
     return 0
 
