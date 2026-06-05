@@ -91,12 +91,6 @@ def main() -> int:
         return 2
 
     signals = _read_signals(log_path)
-    if not signals:
-        print(json.dumps({
-            "ok": False, "error": "empty_log", "path": str(log_path),
-        }))
-        return 2
-
     pairs, unmatched = _pair_signals(signals)
     total_pnl = sum(p.pnl_usdc for p in pairs)
     per_token = defaultdict(lambda: {"pairs": 0, "pnl": 0.0})
@@ -104,8 +98,8 @@ def main() -> int:
         per_token[fp.token_id]["pairs"] += 1
         per_token[fp.token_id]["pnl"] += fp.pnl_usdc
 
-    first_ts = signals[0]["ts_iso"]
-    last_ts = signals[-1]["ts_iso"]
+    first_ts = signals[0]["ts_iso"] if signals else None
+    last_ts = signals[-1]["ts_iso"] if signals else None
 
     report_md = _render_report(
         slug=args.slug,
@@ -166,6 +160,7 @@ def main() -> int:
         "n_pairs": len(pairs),
         "n_unmatched": len(unmatched),
         "realised_pnl_usdc": round(total_pnl, 4),
+        "empty_log": len(signals) == 0,
         "window": {"first_ts": first_ts, "last_ts": last_ts},
     }))
     return 0
@@ -227,8 +222,8 @@ def _render_report(
     *,
     slug: str,
     date: str,
-    first_ts: str,
-    last_ts: str,
+    first_ts: str | None,
+    last_ts: str | None,
     n_signals: int,
     pairs: list[FillPair],
     unmatched: list[dict],
@@ -240,10 +235,15 @@ def _render_report(
     flats = len(pairs) - wins - losses
     win_rate = (wins / len(pairs) * 100) if pairs else 0.0
     avg_pnl = (total_pnl / len(pairs)) if pairs else 0.0
+    window = (
+        f"`{first_ts}` → `{last_ts}`"
+        if first_ts and last_ts
+        else "_no signals captured during window_"
+    )
     lines = [
         f"# Paper trading report: {slug} ({date})",
         "",
-        f"- **Window**: `{first_ts}` → `{last_ts}`",
+        f"- **Window**: {window}",
         f"- **Signals**: {n_signals}",
         f"- **Matched pairs**: {len(pairs)}",
         f"- **Unmatched signals**: {len(unmatched)}",
@@ -256,6 +256,8 @@ def _render_report(
         "| Token (first 14) | Pairs | PnL (USDC) |",
         "|---|---|---|",
     ]
+    if not per_token:
+        lines.append("| _none_ | 0 | $0.0000 |")
     for token, stats in sorted(per_token.items(), key=lambda kv: -kv[1]["pnl"]):
         lines.append(
             f"| `{token[:14]}..` | {stats['pairs']} | ${stats['pnl']:.4f} |"

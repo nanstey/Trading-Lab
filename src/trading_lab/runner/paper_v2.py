@@ -121,6 +121,7 @@ class PaperRunnerV2:
         self._log_path = (
             self.LOG_DIR / f"paper_{slug}_{datetime.now(tz=UTC):%Y%m%d}.jsonl"
         )
+        self._log_path.touch(exist_ok=True)
         self._signals_emitted = 0
         self._token_to_instrument: dict[str, Any] = {}
 
