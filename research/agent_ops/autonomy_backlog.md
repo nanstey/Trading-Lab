@@ -55,4 +55,5 @@ Develop, test, and deploy increasingly profitable trading strategies without com
 - The evening cycle should include reflection and a concrete self-improvement action where justified.
 - The heartbeat cadence is temporarily every 15 minutes for tonight; evaluate token cost versus value before deciding whether to return to hourly.
 - Legacy Trading-Lab crons are paused so the autonomy loop is the primary control plane for now.
-- If the cron fix is to be committed, isolate `scripts/hermes_remaining_crons.py`, `tests/test_hermes_cron_scripts.py`, `research/optimizer_outputs/hl-donchian_2024-05-30_2026-06-05.json`, and this backlog file from unrelated working-tree changes.
+- Cron fix and its regression test were committed and pushed on `main` as `4bbb029` (`fix(cron): apply hl optimize lifecycle transitions`).
+- Unrelated dirty file still present: `research/paper_reports/tick-mean-revert_20260604.md`.
