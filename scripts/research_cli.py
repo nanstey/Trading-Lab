@@ -47,6 +47,12 @@ def main() -> int:
     p_exp = sub.add_parser("experiments")
     p_exp.add_argument("--slug", default=None)
     p_exp.add_argument("--limit", type=int, default=20)
+    p_exp.add_argument(
+        "--sort",
+        choices=["created_at", "pnl", "sharpe", "expectancy", "fill_rate", "score"],
+        default="score",
+        help="Sort experiments by methodology-aware score by default, or by a raw field.",
+    )
 
     sub.add_parser("budget")
     sub.add_parser("init")
@@ -55,6 +61,7 @@ def main() -> int:
 
     from trading_lab.agent import lifecycle
     from trading_lab.agent.budget import consumed
+    from trading_lab.research.experiment_reporting import enrich_experiment_row, sort_experiments
 
     if args.cmd == "init":
         lifecycle.init_db(args.db)
@@ -77,7 +84,12 @@ def main() -> int:
             return 1
         out = asdict(h)
         out["history"] = lifecycle.history(args.slug, db_path=args.db)
-        out["experiments"] = lifecycle.list_experiments(args.slug, db_path=args.db, limit=5)
+        out["experiments"] = sort_experiments(
+            lifecycle.list_experiments(args.slug, db_path=args.db, limit=5),
+            "score",
+        )
+        if out["experiments"]:
+            out["last_experiment"] = out["experiments"][0]
         print(json.dumps(out, indent=2))
         return 0
 
@@ -86,10 +98,8 @@ def main() -> int:
         return 0
 
     if args.cmd == "experiments":
-        print(json.dumps(
-            lifecycle.list_experiments(args.slug, db_path=args.db, limit=args.limit),
-            indent=2,
-        ))
+        rows = lifecycle.list_experiments(args.slug, db_path=args.db, limit=args.limit)
+        print(json.dumps(sort_experiments(rows, args.sort), indent=2))
         return 0
 
     if args.cmd == "budget":

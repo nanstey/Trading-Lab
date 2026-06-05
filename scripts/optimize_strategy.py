@@ -50,12 +50,28 @@ log = logging.getLogger("optimize")
 
 
 @dataclass
-class GridResult:
-    params: dict[str, float]
+class BacktestMetrics:
     pnl: float
     sharpe: float
     max_dd: float
     n_trades: int
+    expectancy_usdc: float
+    fill_rate: float
+    n_orders: int
+    n_fills: int
+    n_markets: int
+    n_markets_with_fills: int
+    longest_losing_streak: int
+
+
+@dataclass
+class GridResult:
+    params: dict[str, float]
+    metrics: BacktestMetrics
+    methodology: dict
+    methodology_state: str
+    methodology_category: str
+    methodology_score: float
 
 
 @dataclass
@@ -67,6 +83,10 @@ class WalkForwardResult:
     recent_oos_sharpe: float
     recent_oos_pnl: float
     is_sharpe: float
+    methodology: dict
+    methodology_state: str
+    methodology_category: str
+    methodology_score: float
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +153,7 @@ def run_single_backtest(
     start: datetime,
     end: datetime,
     initial_capital_usdc: float,
-) -> tuple[float, float, float, int]:
+) -> BacktestMetrics:
     """
     Run one backtest as a subprocess and parse its --json output.
 
@@ -184,7 +204,57 @@ def run_single_backtest(
         (m["max_drawdown_pct"] for m in summary.get("per_market", [])),
         default=0.0,
     )
-    return pnl, sharpe, max_dd, n_trades
+    return BacktestMetrics(
+        pnl=pnl,
+        sharpe=sharpe,
+        max_dd=max_dd,
+        n_trades=n_trades,
+        expectancy_usdc=float(summary.get("aggregate_expectancy_usdc", 0.0)),
+        fill_rate=float(summary.get("aggregate_fill_rate", 0.0)),
+        n_orders=int(summary.get("aggregate_n_orders", 0)),
+        n_fills=int(summary.get("aggregate_n_fills", 0)),
+        n_markets=int(summary.get("n_markets", len(summary.get("per_market", [])))),
+        n_markets_with_fills=int(summary.get("n_markets_with_fills", 0)),
+        longest_losing_streak=int(summary.get("max_longest_losing_streak", 0)),
+    )
+
+
+def _methodology_for_metrics(metrics: BacktestMetrics, *, min_trades: int, min_fill_rate: float, min_markets_with_fills: int) -> tuple[dict, str, str, float]:
+    from trading_lab.agent.lifecycle import State
+    from trading_lab.research.eval_methodology import assess_backtest
+    from trading_lab.research.experiment_reporting import score_backtest_result
+
+    decision = assess_backtest(
+        state_enum=State,
+        sharpe=metrics.sharpe,
+        max_dd_pct=metrics.max_dd,
+        n_trades=metrics.n_trades,
+        pnl_usdc=metrics.pnl,
+        expectancy_usdc=metrics.expectancy_usdc,
+        fill_rate=metrics.fill_rate,
+        n_orders=metrics.n_orders,
+        n_fills=metrics.n_fills,
+        n_markets=metrics.n_markets,
+        n_markets_with_fills=metrics.n_markets_with_fills,
+        min_trades=min_trades,
+        min_fill_rate=min_fill_rate,
+        min_markets_with_fills=min_markets_with_fills,
+    )
+    enriched = {
+        "pnl": metrics.pnl,
+        "sharpe": metrics.sharpe,
+        "max_dd": metrics.max_dd,
+        "n_trades": metrics.n_trades,
+        "expectancy_usdc": metrics.expectancy_usdc,
+        "fill_rate": metrics.fill_rate,
+        "n_orders": metrics.n_orders,
+        "n_fills": metrics.n_fills,
+        "n_markets": metrics.n_markets,
+        "n_markets_with_fills": metrics.n_markets_with_fills,
+        "methodology": decision.methodology,
+        "methodology_decision_state": decision.new_state,
+    }
+    return decision.methodology, decision.new_state, decision.rejection_category, score_backtest_result(enriched)
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +327,14 @@ def main() -> int:
         help="Parallel grid+WF backtest workers (default 4; 1 = serial)",
     )
     p.add_argument(
+        "--min-fill-rate", type=float, default=0.05,
+        help="Methodology floor for acceptable fill rate when orders were placed.",
+    )
+    p.add_argument(
+        "--min-markets-with-fills", type=int, default=2,
+        help="Methodology floor for breadth when evaluating multi-market runs.",
+    )
+    p.add_argument(
         "--hypotheses-dir", type=Path, default=Path("research/hypotheses"),
     )
     p.add_argument(
@@ -319,10 +397,10 @@ def main() -> int:
 
     def _run_grid_point(params):
         try:
-            pnl, sharpe, max_dd, n_trades = run_single_backtest(
+            metrics = run_single_backtest(
                 args.slug, params, data_start, train_end, args.initial_capital_usdc,
             )
-            return params, (pnl, sharpe, max_dd, n_trades), None
+            return params, metrics, None
         except Exception as exc:
             return params, None, str(exc)
 
@@ -341,29 +419,71 @@ def main() -> int:
         if err is not None:
             log.warning("grid backtest failed params=%s err=%s", params, err)
             continue
-        pnl, sharpe, max_dd, n_trades = metrics
+        assert metrics is not None
+        methodology, methodology_state, methodology_category, methodology_score = _methodology_for_metrics(
+            metrics,
+            min_trades=args.min_trades_floor,
+            min_fill_rate=args.min_fill_rate,
+            min_markets_with_fills=args.min_markets_with_fills,
+        )
         budget.consume("backtests", db_path=args.db)
         lifecycle.record_experiment(
             slug=args.slug,
-            params=params,
+            params={
+                **params,
+                "_meta": {
+                    "expectancy_usdc": metrics.expectancy_usdc,
+                    "n_orders": metrics.n_orders,
+                    "n_fills": metrics.n_fills,
+                    "n_markets": metrics.n_markets,
+                    "n_markets_with_fills": metrics.n_markets_with_fills,
+                    "longest_losing_streak": metrics.longest_losing_streak,
+                    "methodology_state": methodology_state,
+                    "methodology_category": methodology_category,
+                    "methodology_score": methodology_score,
+                },
+            },
             data_start=str(data_start.date()),
             data_end=str(train_end.date()),
-            sharpe=sharpe, max_dd=max_dd, fill_rate=0.0,
-            pnl=pnl, n_trades=n_trades, db_path=args.db,
+            sharpe=metrics.sharpe,
+            max_dd=metrics.max_dd,
+            fill_rate=metrics.fill_rate,
+            pnl=metrics.pnl,
+            n_trades=metrics.n_trades,
+            db_path=args.db,
         )
         grid.append(GridResult(
-            params=params, pnl=pnl, sharpe=sharpe, max_dd=max_dd, n_trades=n_trades,
+            params=params,
+            metrics=metrics,
+            methodology=methodology,
+            methodology_state=methodology_state,
+            methodology_category=methodology_category,
+            methodology_score=methodology_score,
         ))
-        log.info("  params=%s pnl=$%.2f trades=%d", params, pnl, n_trades)
+        log.info(
+            "  params=%s pnl=$%.2f exp=%.4f fill=%.3f trades=%d score=%.1f",
+            params,
+            metrics.pnl,
+            metrics.expectancy_usdc,
+            metrics.fill_rate,
+            metrics.n_trades,
+            methodology_score,
+        )
 
     if not grid:
         print(json.dumps({"ok": False, "error": "grid_empty"}))
         return 4
 
-    # 2) Pick top-K by PnL (with trade-count floor)
+    # 2) Pick top-K by methodology-aware score (with trade-count floor)
     candidates = sorted(
-        [g for g in grid if g.n_trades >= args.min_trades_floor],
-        key=lambda g: g.pnl,
+        [g for g in grid if g.metrics.n_trades >= args.min_trades_floor],
+        key=lambda g: (
+            g.methodology_score,
+            g.metrics.pnl,
+            g.metrics.expectancy_usdc,
+            g.metrics.sharpe,
+            -abs(g.metrics.max_dd),
+        ),
         reverse=True,
     )[: args.top_k]
     if not candidates:
@@ -408,11 +528,11 @@ def main() -> int:
     def _run_wf_job(job):
         cand, w_start, w_end = job
         try:
-            pnl, sharpe, max_dd, n_trades = run_single_backtest(
+            metrics = run_single_backtest(
                 args.slug, cand.params, w_start, w_end,
                 args.initial_capital_usdc,
             )
-            return (cand, w_start, w_end, (pnl, sharpe, max_dd, n_trades), None)
+            return (cand, w_start, w_end, metrics, None)
         except Exception as exc:
             return (cand, w_start, w_end, None, str(exc))
 
@@ -432,21 +552,56 @@ def main() -> int:
             log.warning("WF backtest failed %s %s..%s: %s",
                         cand.params, w_start, w_end, err)
             continue
-        pnl, sharpe, max_dd, n_trades = metrics
+        assert metrics is not None
+        methodology, methodology_state, methodology_category, methodology_score = _methodology_for_metrics(
+            metrics,
+            min_trades=args.min_trades_floor,
+            min_fill_rate=args.min_fill_rate,
+            min_markets_with_fills=args.min_markets_with_fills,
+        )
         budget.consume("backtests", db_path=args.db)
         lifecycle.record_experiment(
             slug=args.slug,
-            params={**cand.params, "_wf_window": f"{w_start.date()}..{w_end.date()}"},
+            params={
+                **cand.params,
+                "_wf_window": f"{w_start.date()}..{w_end.date()}",
+                "_meta": {
+                    "expectancy_usdc": metrics.expectancy_usdc,
+                    "n_orders": metrics.n_orders,
+                    "n_fills": metrics.n_fills,
+                    "n_markets": metrics.n_markets,
+                    "n_markets_with_fills": metrics.n_markets_with_fills,
+                    "longest_losing_streak": metrics.longest_losing_streak,
+                    "methodology_state": methodology_state,
+                    "methodology_category": methodology_category,
+                    "methodology_score": methodology_score,
+                },
+            },
             data_start=str(w_start.date()),
             data_end=str(w_end.date()),
-            sharpe=sharpe, max_dd=max_dd, fill_rate=0.0,
-            pnl=pnl, n_trades=n_trades, db_path=args.db,
+            sharpe=metrics.sharpe,
+            max_dd=metrics.max_dd,
+            fill_rate=metrics.fill_rate,
+            pnl=metrics.pnl,
+            n_trades=metrics.n_trades,
+            db_path=args.db,
         )
         per_cand[id(cand)].append({
             "start": str(w_start.date()), "end": str(w_end.date()),
-            "pnl": pnl, "sharpe": sharpe, "max_dd": max_dd,
-            "n_trades": n_trades,
-            "_w_start": w_start,  # for sort
+            "pnl": metrics.pnl, "sharpe": metrics.sharpe, "max_dd": metrics.max_dd,
+            "n_trades": metrics.n_trades,
+            "expectancy_usdc": metrics.expectancy_usdc,
+            "fill_rate": metrics.fill_rate,
+            "n_orders": metrics.n_orders,
+            "n_fills": metrics.n_fills,
+            "n_markets": metrics.n_markets,
+            "n_markets_with_fills": metrics.n_markets_with_fills,
+            "longest_losing_streak": metrics.longest_losing_streak,
+            "methodology": methodology,
+            "methodology_state": methodology_state,
+            "methodology_category": methodology_category,
+            "methodology_score": methodology_score,
+            "_w_start": w_start,
         })
 
     wf_results: list[WalkForwardResult] = []
@@ -457,22 +612,54 @@ def main() -> int:
         if not oos_windows:
             continue
         recent = oos_windows[-1]
+        agg_metrics = BacktestMetrics(
+            pnl=sum(w["pnl"] for w in oos_windows) / len(oos_windows),
+            sharpe=sum(w["sharpe"] for w in oos_windows) / len(oos_windows),
+            max_dd=min(w["max_dd"] for w in oos_windows),
+            n_trades=sum(int(w["n_trades"]) for w in oos_windows),
+            expectancy_usdc=sum(float(w.get("expectancy_usdc", 0.0)) for w in oos_windows) / len(oos_windows),
+            fill_rate=sum(float(w.get("fill_rate", 0.0)) for w in oos_windows) / len(oos_windows),
+            n_orders=sum(int(w.get("n_orders", 0)) for w in oos_windows),
+            n_fills=sum(int(w.get("n_fills", 0)) for w in oos_windows),
+            n_markets=max(int(w.get("n_markets", 1)) for w in oos_windows),
+            n_markets_with_fills=max(int(w.get("n_markets_with_fills", 0)) for w in oos_windows),
+            longest_losing_streak=max(int(w.get("longest_losing_streak", 0)) for w in oos_windows),
+        )
+        methodology, methodology_state, methodology_category, methodology_score = _methodology_for_metrics(
+            agg_metrics,
+            min_trades=args.min_trades_floor,
+            min_fill_rate=args.min_fill_rate,
+            min_markets_with_fills=args.min_markets_with_fills,
+        )
         wf_results.append(WalkForwardResult(
             params=cand.params,
             oos_windows=oos_windows,
-            oos_mean_sharpe=sum(w["sharpe"] for w in oos_windows) / len(oos_windows),
-            oos_mean_pnl=sum(w["pnl"] for w in oos_windows) / len(oos_windows),
+            oos_mean_sharpe=agg_metrics.sharpe,
+            oos_mean_pnl=agg_metrics.pnl,
             recent_oos_sharpe=recent["sharpe"],
             recent_oos_pnl=recent["pnl"],
-            is_sharpe=cand.sharpe,
+            is_sharpe=cand.metrics.sharpe,
+            methodology=methodology,
+            methodology_state=methodology_state,
+            methodology_category=methodology_category,
+            methodology_score=methodology_score,
         ))
 
     if not wf_results:
         print(json.dumps({"ok": False, "error": "walk_forward_empty"}))
         return 4
 
-    # 4) Pick winner by recent-OOS PnL (most relevant for current regime)
-    wf_results.sort(key=lambda w: (w.recent_oos_pnl, w.oos_mean_pnl), reverse=True)
+    # 4) Pick winner by OOS methodology first, then current-regime edge.
+    wf_results.sort(
+        key=lambda w: (
+            w.methodology_score,
+            w.recent_oos_pnl,
+            w.oos_mean_pnl,
+            w.recent_oos_sharpe,
+            w.oos_mean_sharpe,
+        ),
+        reverse=True,
+    )
     winner = wf_results[0]
     new_state, category = decide_oos(winner)
 
@@ -480,7 +667,7 @@ def main() -> int:
     # Sanity check: if every grid point yielded an identical (pnl, n_trades)
     # tuple, the parameters didn't actually affect the strategy. Likely the
     # param names in the MD don't match the strategy *Config fields.
-    unique_results = {(round(g.pnl, 4), g.n_trades) for g in grid}
+    unique_results = {(round(g.metrics.pnl, 4), g.metrics.n_trades) for g in grid}
     if len(grid) > 1 and len(unique_results) == 1:
         warnings.append("grid_metrics_identical")
 
@@ -490,12 +677,31 @@ def main() -> int:
         "warnings": warnings,
         "grid_size": len(grid),
         "wf_candidates": len(wf_results),
+        "candidate_ranking": [
+            {
+                "params": c.params,
+                "score": c.methodology_score,
+                "state": c.methodology_state,
+                "category": c.methodology_category,
+                "pnl": c.metrics.pnl,
+                "expectancy_usdc": c.metrics.expectancy_usdc,
+                "fill_rate": c.metrics.fill_rate,
+                "n_trades": c.metrics.n_trades,
+                "sharpe": c.metrics.sharpe,
+                "max_dd": c.metrics.max_dd,
+            }
+            for c in candidates
+        ],
         "best_params": winner.params,
         "best_is_sharpe": winner.is_sharpe,
         "best_oos_mean_sharpe": winner.oos_mean_sharpe,
         "best_oos_mean_pnl": winner.oos_mean_pnl,
         "best_recent_oos_sharpe": winner.recent_oos_sharpe,
         "best_recent_oos_pnl": winner.recent_oos_pnl,
+        "best_methodology_score": winner.methodology_score,
+        "best_methodology": winner.methodology,
+        "best_methodology_state": winner.methodology_state,
+        "best_methodology_category": winner.methodology_category,
         "oos_windows": winner.oos_windows,
         "decision_new_state": new_state,
         "decision_rejection_category": category,
@@ -517,8 +723,10 @@ def main() -> int:
                 to_state=new_state,
                 reason=(
                     f"optimize: best_params={winner.params} "
+                    f"score={winner.methodology_score:.1f} "
                     f"oos_mean_sharpe={winner.oos_mean_sharpe:.3f} "
-                    f"recent_oos_pnl=${winner.recent_oos_pnl:.2f}"
+                    f"recent_oos_pnl=${winner.recent_oos_pnl:.2f} "
+                    f"exp={winner.methodology.get('expectancy_usdc', 0.0):.4f}"
                 ),
                 actor=args.actor,
                 rejection_category=category or None,
