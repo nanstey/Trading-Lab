@@ -1,6 +1,6 @@
 # Gambit Autonomy Backlog
 
-Last updated: 2026-06-05 01:57 PDT
+Last updated: 2026-06-05 02:20 PDT
 
 ## Mission
 Develop, test, and deploy increasingly profitable trading strategies without compromising rigor, risk controls, or capital discipline.
@@ -34,7 +34,7 @@ Develop, test, and deploy increasingly profitable trading strategies without com
 - [x] Install 09:00 and 21:00 briefing crons.
 - [ ] Define how token-usage and work-in-progress are summarized durably.
 - [x] Investigate the failed optimize-queue cron run and remediate if needed.
-- [ ] Triage why live Polymarket venue-equity refresh still returns non-positive balances and forces the `paper-fallback` equity source for pct-of-equity PAPER caps.
+- [ ] Verify the intended Polymarket wallet mode (EOA vs proxy/deposit) and apply the matching `POLY_FUNDER` / `POLY_SIGNATURE_TYPE`; current equity telemetry fails authenticated CLOB checks with HTTP 401 even though L1 `derive-api-key` still works.
 - [ ] Decide whether the paper fallback source is acceptable for unattended paper operation or whether PAPER should pause until real venue equity is observable again.
 - [ ] Start the next research cycle with system health and queue review.
 
@@ -43,18 +43,15 @@ Develop, test, and deploy increasingly profitable trading strategies without com
 - Any paid-data or paid-tool route is disallowed.
 
 ## Latest heartbeat findings
-- Risk state normal: no `data/.kill_switch`; `scripts/check_env.py` passed 26/26.
-- No active paper/live/ingestion processes were running during the check.
-- `tick-mean-revert` remains the only PAPER slug, but its effective cap is currently 0.0 USDC because venue-equity telemetry resolved to zero.
-- Verified the Hyperliquid optimize-queue failure root cause: `hl_optimize.py` emits `decision_new_state`, but the cron wrapper previously failed state verification before applying the lifecycle transition.
-- `hl-donchian` now correctly shows `OPTIMIZE -> REJECTED` via actor `agent:research-optimize-queue` at `2026-06-05T08:16:52.557529+00:00`.
-- Fresh optimizer artifact exists at `research/optimizer_outputs/hl-donchian_2024-05-30_2026-06-05.json`; outcome is still economically bad despite positive pnl because min OOS trades is 0 and the decision remains REJECTED.
-- Added regression coverage in `tests/test_hermes_cron_scripts.py` for the Hyperliquid auto-transition path; targeted pytest now passes.
-- `scripts/portfolio_status.py --refresh --no-event` no longer leaves the PAPER slug economically disarmed: `tick-mean-revert` now resolves to a 300 USDC cap via `venue_equity_source="paper-fallback"`, but real venue-equity telemetry is still broken (`data-api` and `clob+orders` both returned non-positive balances).
-- Ran a bounded `paper_run_v2.py --slug tick-mean-revert` verification: node booted cleanly, subscribed 6 Polymarket instruments, kill switch stayed clear, and the run exited normally with zero signals.
-- Found and fixed a bookkeeping gap: zero-signal paper sessions returned a `log_path` but produced no file, causing `paper_summary.py` to fail with `log_not_found`.
-- Patched `PaperRunnerV2` to create the session log file up front and patched `paper_summary.py` to emit a zero-signal markdown report instead of failing on an empty log; added `tests/test_paper_summary.py` and verified with targeted pytest plus a fresh bounded paper run.
-- New durable artifact: `research/paper_reports/tick-mean-revert_20260605.md` (0 signals / $0.00 realised PnL, confirms bookkeeping now works for empty sessions).
+- Risk state still normal: no `data/.kill_switch`; no active paper/live/ingestion processes found.
+- Lifecycle queue shape is unchanged: `tick-mean-revert` is the only PAPER slug; several Polymarket slugs remain PROPOSED; `hl-donchian` remains correctly REJECTED after the earlier cron fix.
+- Budget ledger for today still shows zero counted starts/backtests/tokens.
+- `scripts/portfolio_status.py --refresh --no-event` still resolves `tick-mean-revert` to a 300 USDC cap only via `venue_equity_source="paper-fallback"`; real Polymarket equity telemetry remains unavailable.
+- Root cause is now sharper: `data-api /value` returns 0.0 for both the signer and discovered proxy wallet, and authenticated CLOB calls (`/balance-allowance`, `/data/orders`) return HTTP 401.
+- Verified this is not a dead L1 signer path: direct `GET /auth/derive-api-key` with L1 headers still succeeds, so the failure is more likely wrong/missing `POLY_FUNDER` / `POLY_SIGNATURE_TYPE` (wallet mode mismatch) than broken network reachability.
+- Hardened `scripts/check_env.py` so future health checks detect this explicitly via a new `Polymarket CLOB auth` check and surface optional `POLY_FUNDER` / `POLY_SIGNATURE_TYPE` env slots.
+- Added targeted regression coverage in `tests/test_check_env.py`; `.venv/bin/python -m pytest tests/test_check_env.py -q` passes.
+- Current `scripts/check_env.py --verbose` result is now intentionally red on this machine: 28/29 checks passed, with the sole failure `Polymarket CLOB auth = unauthorized`.
 
 ## Notes for future runs
 - Semi-daily briefings should cover the prior 12 hours and the intended next 12 hours.
@@ -63,4 +60,4 @@ Develop, test, and deploy increasingly profitable trading strategies without com
 - Legacy Trading-Lab crons are paused so the autonomy loop is the primary control plane for now.
 - Cron fix and its regression test were committed and pushed on `main` as `4bbb029` (`fix(cron): apply hl optimize lifecycle transitions`).
 - Unrelated dirty file still present: `research/paper_reports/tick-mean-revert_20260604.md`.
-- Next best action: investigate why Polymarket equity telemetry is returning non-positive balances even though paper fallback keeps the allocator alive; until that is resolved, paper ops are mechanically healthy but not grounded in real venue equity.
+- Next best action: verify the account's intended Polymarket wallet mode and set the matching `POLY_FUNDER` / `POLY_SIGNATURE_TYPE` in `.env` via an operator-approved secrets update; until that is fixed, paper caps depend on `paper-fallback` and are not grounded in authenticated venue equity.

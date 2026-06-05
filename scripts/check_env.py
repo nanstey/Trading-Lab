@@ -116,6 +116,95 @@ async def check_polymarket_connectivity(_host: str) -> CheckResult:
         )
 
 
+def _candidate_polymarket_auth_addresses(cfg) -> list[str]:
+    from trading_lab.venues.polymarket.auth import derive_address
+
+    signer = derive_address(cfg.polymarket.private_key.get_secret_value())
+    addresses = [signer]
+    funder = (cfg.polymarket.funder or "").strip()
+    if funder and funder.lower() != signer.lower():
+        addresses.append(funder)
+    return addresses
+
+
+async def _probe_polymarket_clob_auth(
+    http_url: str,
+    *,
+    api_key: str,
+    api_secret: str,
+    api_passphrase: str,
+    address: str,
+) -> None:
+    from trading_lab.venues.polymarket.auth import L2Credentials
+    from trading_lab.venues.polymarket.client import PolymarketRestClient
+
+    rest = PolymarketRestClient(
+        http_url=http_url,
+        creds=L2Credentials(
+            api_key=api_key,
+            api_secret=api_secret,
+            api_passphrase=api_passphrase,
+            address=address,
+        ),
+    )
+    try:
+        await rest._get("/balance-allowance", params={"asset_type": "COLLATERAL"}, auth=True)
+    finally:
+        await rest.close()
+
+
+async def check_polymarket_auth_connectivity(cfg) -> CheckResult:
+    """Check whether configured Polymarket L2 creds can hit an authenticated CLOB endpoint."""
+    if not cfg.polymarket.has_l1_credentials or not cfg.polymarket.has_l2_credentials:
+        return CheckResult(
+            name="Polymarket CLOB auth",
+            passed=True,
+            value="skipped",
+            note="POLY_PRIVATE_KEY + POLY_API_* not fully configured",
+        )
+
+    try:
+        addresses = _candidate_polymarket_auth_addresses(cfg)
+    except Exception as exc:
+        return CheckResult(
+            name="Polymarket CLOB auth",
+            passed=False,
+            value="wallet-derive-failed",
+            note=str(exc)[:120],
+        )
+
+    failures: list[str] = []
+    for idx, addr in enumerate(addresses):
+        try:
+            await _probe_polymarket_clob_auth(
+                cfg.venues.polymarket.http_url,
+                api_key=cfg.polymarket.api_key,
+                api_secret=cfg.polymarket.api_secret.get_secret_value(),
+                api_passphrase=cfg.polymarket.api_passphrase.get_secret_value(),
+                address=addr,
+            )
+            mode = "signer" if idx == 0 else "funder"
+            return CheckResult(
+                name="Polymarket CLOB auth",
+                passed=True,
+                value="HTTP 200",
+                note=f"authenticated balance/allowance check passed via {mode} address",
+            )
+        except Exception as exc:
+            failures.append(f"{addr}: {exc}")
+
+    return CheckResult(
+        name="Polymarket CLOB auth",
+        passed=False,
+        value="unauthorized",
+        note=(
+            "Authenticated CLOB check failed for all candidate addresses; "
+            "stale POLY_API_* credentials or wrong POLY_FUNDER/POLY_SIGNATURE_TYPE. "
+            f"Last errors: {' | '.join(failures)[:180]}"
+        ),
+    )
+
+
 async def check_hyperliquid_connectivity(
     api_url: str, network: str = "mainnet"
 ) -> CheckResult:
@@ -268,8 +357,11 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
     report.add(check_env_var("POLY_API_KEY", required=False, sensitive=True))
     report.add(check_env_var("POLY_API_SECRET", required=False, sensitive=True))
     report.add(check_env_var("POLY_API_PASSPHRASE", required=False, sensitive=True))
+    report.add(check_env_var("POLY_FUNDER", required=False, sensitive=False))
+    report.add(check_env_var("POLY_SIGNATURE_TYPE", required=False, sensitive=False))
 
     # Surface the venue endpoint we'll actually use (defined in venues.<v>.endpoints).
+    _cfg = None
     try:
         from trading_lab.config import load_config
         _cfg = load_config()
@@ -330,13 +422,15 @@ async def run_checks(args: argparse.Namespace) -> CheckReport:
         print("Checking API connectivity...")
         # Read endpoints from load_config (sourced from venues.<v>.endpoints).
         from trading_lab.venues.polymarket.endpoints import HTTP_URL as PM_HTTP_URL
-        poly_host = _cfg.venues.polymarket.http_url if "_cfg" in dir() else PM_HTTP_URL
+        poly_host = _cfg.venues.polymarket.http_url if _cfg is not None else PM_HTTP_URL
         report.add(await check_polymarket_connectivity(poly_host))
+        if _cfg is not None:
+            report.add(await check_polymarket_auth_connectivity(_cfg))
 
         # Hyperliquid: ping the requested network. If both wallet keys are
         # present (or `--network all`), ping both networks so the operator
         # gets a full picture.
-        if "_cfg" in dir():
+        if _cfg is not None:
             hl = _cfg.venues.hyperliquid
             poly_secrets = _cfg.hyperliquid_secrets
         else:
