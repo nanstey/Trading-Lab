@@ -243,6 +243,9 @@ def build_cross_venue_paper_strategy_config(spec: CrossVenueSpec) -> ImportableS
             "poly_no_token_id": spec.polymarket.no_token_id,
             "hl_symbol": spec.hyperliquid.symbol or "",
             "hl_network": spec.hyperliquid.network,
+            "fair_value_anchor_price": getattr(spec.fair_value_model, "anchor_price", 0.0),
+            "fair_value_scale": getattr(spec.fair_value_model, "scale", 0.0),
+            "fair_value_bias": getattr(spec.fair_value_model, "bias", 0.0),
         },
     )
 

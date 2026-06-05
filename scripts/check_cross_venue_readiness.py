@@ -17,14 +17,12 @@ def build_readiness_report(path: str | Path) -> dict:
 
     gaps: list[str] = []
     backtest_ready = spec.hyperliquid.kind == "perp" and not errors
+    has_fair_value = spec.fair_value_model is not None
     if spec.hyperliquid.kind == "perp":
-        gaps.extend(
-            [
-                "dual_venue_paper_runner_missing",
-                "cross_venue_fair_value_model_missing",
-                "cross_venue_legging_risk_state_machine_missing",
-            ]
-        )
+        gaps.append("dual_venue_paper_runner_missing")
+        if not has_fair_value:
+            gaps.append("cross_venue_fair_value_model_missing")
+        gaps.append("cross_venue_legging_risk_state_machine_missing")
     else:
         gaps.extend(
             [

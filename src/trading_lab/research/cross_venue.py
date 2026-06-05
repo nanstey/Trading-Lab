@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -8,6 +7,7 @@ import yaml
 
 
 HyperliquidKind = Literal["perp", "outcome"]
+FairValueModelKind = Literal["anchored_logistic"]
 
 
 @dataclass(frozen=True)
@@ -27,11 +27,20 @@ class HyperliquidLeg:
 
 
 @dataclass(frozen=True)
+class FairValueModelSpec:
+    kind: FairValueModelKind = "anchored_logistic"
+    anchor_price: float = 0.0
+    scale: float = 0.0
+    bias: float = 0.0
+
+
+@dataclass(frozen=True)
 class CrossVenueSpec:
     slug: str
     venue: str
     polymarket: PolymarketLeg
     hyperliquid: HyperliquidLeg
+    fair_value_model: FairValueModelSpec | None = None
     strategy_module: str | None = None
     strategy_class: str | None = None
     strategy_config_class: str | None = None
@@ -43,6 +52,7 @@ class CrossVenueSpec:
             "venue": self.venue,
             "polymarket": asdict(self.polymarket),
             "hyperliquid": asdict(self.hyperliquid),
+            "fair_value_model": asdict(self.fair_value_model) if self.fair_value_model else None,
             "strategy_module": self.strategy_module,
             "strategy_class": self.strategy_class,
             "strategy_config_class": self.strategy_config_class,
@@ -60,12 +70,10 @@ def _read_frontmatter(path: Path) -> dict[str, Any]:
     return yaml.load(text[4:end].strip(), Loader=yaml.BaseLoader) or {}
 
 
-
 def _stringify(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
-
 
 
 def _maybe_int(value: Any) -> int | None:
@@ -74,6 +82,11 @@ def _maybe_int(value: Any) -> int | None:
     return int(str(value))
 
 
+def _maybe_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    return float(str(value))
+
 
 def load_cross_venue_spec(path: str | Path) -> CrossVenueSpec:
     md_path = Path(path)
@@ -81,8 +94,17 @@ def load_cross_venue_spec(path: str | Path) -> CrossVenueSpec:
     cross = data.get("cross_venue") or {}
     pm = cross.get("polymarket") or {}
     hl = cross.get("hyperliquid") or {}
+    fv = cross.get("fair_value_model") or {}
     hl_kind_raw = _stringify(hl.get("kind")) or "perp"
     hl_kind: HyperliquidKind = "outcome" if hl_kind_raw == "outcome" else "perp"
+    fair_value_model = None
+    if fv:
+        fair_value_model = FairValueModelSpec(
+            kind="anchored_logistic",
+            anchor_price=_maybe_float(fv.get("anchor_price")) or 0.0,
+            scale=_maybe_float(fv.get("scale")) or 0.0,
+            bias=_maybe_float(fv.get("bias")) or 0.0,
+        )
     return CrossVenueSpec(
         slug=_stringify(data.get("slug")),
         venue=_stringify(data.get("venue")),
@@ -98,12 +120,12 @@ def load_cross_venue_spec(path: str | Path) -> CrossVenueSpec:
             outcome_id=_maybe_int(hl.get("outcome_id")),
             side=_maybe_int(hl.get("side")),
         ),
+        fair_value_model=fair_value_model,
         strategy_module=_stringify(data.get("strategy_module")) or None,
         strategy_class=_stringify(data.get("strategy_class")) or None,
         strategy_config_class=_stringify(data.get("strategy_config_class")) or None,
         source_path=str(md_path),
     )
-
 
 
 def validate_cross_venue_spec(spec: CrossVenueSpec) -> list[str]:
@@ -120,8 +142,18 @@ def validate_cross_venue_spec(spec: CrossVenueSpec) -> list[str]:
         errors.append("cross_venue.polymarket.no_token_id is required")
     if spec.hyperliquid.kind not in {"perp", "outcome"}:
         errors.append("cross_venue.hyperliquid.kind must be 'perp' or 'outcome'")
-    if spec.hyperliquid.kind == "perp" and not spec.hyperliquid.symbol:
-        errors.append("cross_venue.hyperliquid.symbol is required when kind=perp")
+    if spec.hyperliquid.kind == "perp":
+        if not spec.hyperliquid.symbol:
+            errors.append("cross_venue.hyperliquid.symbol is required when kind=perp")
+        if spec.fair_value_model is None:
+            errors.append("cross_venue.fair_value_model is required when kind=perp")
+        else:
+            if spec.fair_value_model.kind != "anchored_logistic":
+                errors.append("cross_venue.fair_value_model.kind must be 'anchored_logistic'")
+            if spec.fair_value_model.anchor_price <= 0:
+                errors.append("cross_venue.fair_value_model.anchor_price must be positive")
+            if spec.fair_value_model.scale <= 0:
+                errors.append("cross_venue.fair_value_model.scale must be positive")
     if spec.hyperliquid.kind == "outcome":
         if spec.hyperliquid.outcome_id is None:
             errors.append("cross_venue.hyperliquid.outcome_id is required when kind=outcome")

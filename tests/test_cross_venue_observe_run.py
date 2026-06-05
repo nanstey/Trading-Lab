@@ -38,6 +38,11 @@ cross_venue:
     kind: perp
     symbol: BTC
     network: testnet
+  fair_value_model:
+    kind: anchored_logistic
+    anchor_price: 65000
+    scale: 2500
+    bias: 0.0
 strategy_module: trading_lab.strategies.cross_venue_observe
 strategy_class: CrossVenueObserveStrategy
 strategy_config_class: CrossVenueObserveConfig

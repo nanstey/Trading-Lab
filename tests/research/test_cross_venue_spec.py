@@ -44,6 +44,11 @@ cross_venue:
     kind: perp
     symbol: BTC
     network: mainnet
+  fair_value_model:
+    kind: anchored_logistic
+    anchor_price: 65000
+    scale: 2500
+    bias: 0.1
 strategy_module: trading_lab.strategies.cross_venue_hedge
 strategy_class: CrossVenueHedgeStrategy
 strategy_config_class: CrossVenueHedgeConfig
@@ -102,6 +107,11 @@ def test_load_cross_venue_spec_parses_perp_leg(tmp_path: Path) -> None:
         outcome_id=None,
         side=None,
     )
+    assert spec.fair_value_model is not None
+    assert spec.fair_value_model.kind == "anchored_logistic"
+    assert spec.fair_value_model.anchor_price == 65000.0
+    assert spec.fair_value_model.scale == 2500.0
+    assert spec.fair_value_model.bias == 0.1
 
 
 def test_validate_cross_venue_spec_rejects_missing_leg_fields(tmp_path: Path) -> None:
@@ -130,6 +140,7 @@ def test_readiness_report_distinguishes_perp_vs_outcome_support(tmp_path: Path) 
     assert perp["readiness"]["backtest"] is True
     assert perp["readiness"]["paper_trade"] is False
     assert "dual_venue_paper_runner_missing" in perp["gaps"]
+    assert "cross_venue_fair_value_model_missing" not in perp["gaps"]
     assert "dual_venue_backtest_runner_missing" not in perp["gaps"]
 
     assert outcome["ok"] is True
