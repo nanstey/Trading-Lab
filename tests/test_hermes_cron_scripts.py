@@ -152,3 +152,51 @@ def test_optimizer_headline_falls_back_to_legacy_fields() -> None:
     assert got["category"] == "marginal_oos"
     assert got["edge_value"] == 44.0
     assert got["methodology_score"] is None
+
+
+
+def test_research_optimize_queue_applies_hl_transition_before_verifying_state(monkeypatch, capsys) -> None:
+    current_state = {"value": "OPTIMIZE"}
+    transition_calls = []
+
+    monkeypatch.setattr(hermes_remaining_crons, "_budget_backtests", lambda: 0)
+    monkeypatch.setattr(hermes_remaining_crons, "_oldest_slug", lambda states: "hl-donchian")
+    monkeypatch.setattr(hermes_remaining_crons, "_slug_venue", lambda slug: "hyperliquid")
+    monkeypatch.setattr(hermes_remaining_crons, "_slug_state", lambda slug: current_state["value"])
+    monkeypatch.setattr(hermes_remaining_crons, "_snapshot_files", lambda paths: set())
+    monkeypatch.setattr(hermes_remaining_crons, "_autocommit_new_files", lambda **kwargs: (True, None))
+    monkeypatch.setattr(hermes_remaining_crons, "_run", lambda *args, **kwargs: None)
+
+    def fake_run_with_retry(cmd, *, timeout, retries=1):
+        return (
+            0,
+            {
+                "ok": True,
+                "decision_new_state": "REJECTED",
+                "decision_reason": "too_few_trades (min=0)",
+                "best_oos_total_pnl": 1300.04,
+            },
+            "",
+        )
+
+    def fake_transition(slug, to_state, reason, *, actor):
+        transition_calls.append((slug, to_state, reason, actor))
+        current_state["value"] = to_state
+        return True, "ok"
+
+    monkeypatch.setattr(hermes_remaining_crons, "_run_with_retry", fake_run_with_retry)
+    monkeypatch.setattr(hermes_remaining_crons, "_transition_slug", fake_transition)
+
+    rc = hermes_remaining_crons.cron_research_optimize_queue()
+
+    assert rc == 0
+    assert transition_calls == [
+        (
+            "hl-donchian",
+            "REJECTED",
+            "hl_optimize: too_few_trades (min=0)",
+            "agent:research-optimize-queue",
+        )
+    ]
+    assert current_state["value"] == "REJECTED"
+    assert "optimize-queue: hl-donchian -> REJECTED edge=1300.04" in capsys.readouterr().out

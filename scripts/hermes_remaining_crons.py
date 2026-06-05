@@ -96,6 +96,29 @@ def _slug_state(slug: str) -> str | None:
     return row[0] if row else None
 
 
+def _transition_slug(slug: str, to_state: str, reason: str, *, actor: str) -> tuple[bool, str]:
+    rc, payload, combined = _run_json(
+        [
+            ".venv/bin/python3",
+            "scripts/transition_lifecycle.py",
+            "--slug",
+            slug,
+            "--to",
+            to_state,
+            "--reason",
+            reason,
+            "--actor",
+            actor,
+        ],
+        timeout=300,
+    )
+    if rc != 0:
+        if payload is not None:
+            return False, str(payload.get("error") or payload.get("detail") or _detail(combined))
+        return False, _detail(combined)
+    return True, "ok"
+
+
 def _slug_venue(slug: str) -> str | None:
     md_path = REPO_ROOT / "research/hypotheses" / f"{slug}.md"
     if md_path.exists():
@@ -431,13 +454,24 @@ def cron_research_optimize_queue() -> int:
     if payload.get("warning") == "grid_metrics_identical":
         print(f"optimize-queue: {slug} failed (grid_metrics_identical)")
         return 1
-    new_state = payload.get("decision_new_state") or payload.get("decision_state")
-    if new_state and _slug_state(slug) != new_state:
-        print(f"optimize-queue: {slug} failed (state verification mismatch)")
-        return 1
     if rc != 0 or not payload.get("ok", False):
         reason = payload.get("error") or _detail(combined)
         print(f"optimize-queue: {slug} failed ({reason})")
+        return 1
+    new_state = payload.get("decision_new_state") or payload.get("decision_state")
+    if venue == "hyperliquid" and new_state and _slug_state(slug) != new_state:
+        reason = payload.get("decision_reason") or payload.get("decision_rejection_category") or "hl_optimize"
+        ok, detail = _transition_slug(
+            slug,
+            new_state,
+            f"hl_optimize: {reason}",
+            actor="agent:research-optimize-queue",
+        )
+        if not ok:
+            print(f"optimize-queue: {slug} failed (transition failed: {detail})")
+            return 1
+    if new_state and _slug_state(slug) != new_state:
+        print(f"optimize-queue: {slug} failed (state verification mismatch)")
         return 1
     if "grid_metrics_identical" in (payload.get("warnings") or []) or payload.get("decision_rejection_category") == "param_space_inert":
         print(f"optimize-queue: {slug} failed (param_space_inert)")
