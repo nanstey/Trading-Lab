@@ -58,11 +58,10 @@ async def test_polymarket_auth_connectivity_skips_without_full_creds() -> None:
 
 @pytest.mark.asyncio
 async def test_polymarket_auth_connectivity_accepts_funder_fallback(monkeypatch) -> None:
-    monkeypatch.setattr(
-        check_env,
-        "_candidate_polymarket_auth_addresses",
-        lambda cfg: ["0xsigner", "0xfunder"],
-    )
+    async def fake_targets(cfg):
+        return [("signer", "0xsigner"), ("configured-funder", "0xfunder")]
+
+    monkeypatch.setattr(check_env, "_candidate_polymarket_auth_targets", fake_targets)
 
     calls: list[str] = []
 
@@ -76,17 +75,16 @@ async def test_polymarket_auth_connectivity_accepts_funder_fallback(monkeypatch)
     result = await check_env.check_polymarket_auth_connectivity(_cfg(funder="0xfunder"))
     assert result.passed is True
     assert result.value == "HTTP 200"
-    assert "funder" in result.note
+    assert "configured-funder" in result.note
     assert calls == ["0xsigner", "0xfunder"]
 
 
 @pytest.mark.asyncio
 async def test_polymarket_auth_connectivity_reports_stale_creds(monkeypatch) -> None:
-    monkeypatch.setattr(
-        check_env,
-        "_candidate_polymarket_auth_addresses",
-        lambda cfg: ["0xsigner"],
-    )
+    async def fake_targets(cfg):
+        return [("signer", "0xsigner")]
+
+    monkeypatch.setattr(check_env, "_candidate_polymarket_auth_targets", fake_targets)
 
     async def fake_probe(http_url: str, **kwargs) -> None:
         raise RuntimeError("401 unauthorized")
@@ -97,3 +95,19 @@ async def test_polymarket_auth_connectivity_reports_stale_creds(monkeypatch) -> 
     assert result.passed is False
     assert result.value == "unauthorized"
     assert "stale POLY_API_* credentials" in result.note
+
+
+@pytest.mark.asyncio
+async def test_candidate_polymarket_auth_targets_adds_discovered_proxy(monkeypatch) -> None:
+    async def fake_discover(addr: str) -> str | None:
+        assert addr == "0xsigner"
+        return "0xproxy"
+
+    monkeypatch.setattr(check_env, "_discover_polymarket_proxy_wallet", fake_discover)
+
+    from trading_lab.venues.polymarket import auth as pm_auth
+
+    monkeypatch.setattr(pm_auth, "derive_address", lambda _: "0xsigner")
+
+    targets = await check_env._candidate_polymarket_auth_targets(_cfg(funder=""))
+    assert targets == [("signer", "0xsigner"), ("discovered-proxy", "0xproxy")]

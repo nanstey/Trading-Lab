@@ -116,15 +116,41 @@ async def check_polymarket_connectivity(_host: str) -> CheckResult:
         )
 
 
-def _candidate_polymarket_auth_addresses(cfg) -> list[str]:
+async def _discover_polymarket_proxy_wallet(address: str) -> str | None:
+    import aiohttp
+
+    url = "https://gamma-api.polymarket.com/public-profile"
+    params = {"address": address}
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+        async with session.get(url, params=params) as resp:
+            if resp.status != 200:
+                return None
+            body = await resp.json()
+
+    if isinstance(body, dict):
+        proxy = body.get("proxyWallet")
+        if isinstance(proxy, str) and proxy.startswith("0x") and len(proxy) == 42:
+            return proxy
+    return None
+
+
+async def _candidate_polymarket_auth_targets(cfg) -> list[tuple[str, str]]:
     from trading_lab.venues.polymarket.auth import derive_address
 
     signer = derive_address(cfg.polymarket.private_key.get_secret_value())
-    addresses = [signer]
+    targets: list[tuple[str, str]] = [("signer", signer)]
+    seen = {signer.lower()}
+
     funder = (cfg.polymarket.funder or "").strip()
-    if funder and funder.lower() != signer.lower():
-        addresses.append(funder)
-    return addresses
+    if funder and funder.lower() not in seen:
+        seen.add(funder.lower())
+        targets.append(("configured-funder", funder))
+
+    proxy = await _discover_polymarket_proxy_wallet(signer)
+    if proxy and proxy.lower() not in seen:
+        targets.append(("discovered-proxy", proxy))
+
+    return targets
 
 
 async def _probe_polymarket_clob_auth(
@@ -164,7 +190,7 @@ async def check_polymarket_auth_connectivity(cfg) -> CheckResult:
         )
 
     try:
-        addresses = _candidate_polymarket_auth_addresses(cfg)
+        targets = await _candidate_polymarket_auth_targets(cfg)
     except Exception as exc:
         return CheckResult(
             name="Polymarket CLOB auth",
@@ -174,7 +200,7 @@ async def check_polymarket_auth_connectivity(cfg) -> CheckResult:
         )
 
     failures: list[str] = []
-    for idx, addr in enumerate(addresses):
+    for label, addr in targets:
         try:
             await _probe_polymarket_clob_auth(
                 cfg.venues.polymarket.http_url,
@@ -183,15 +209,14 @@ async def check_polymarket_auth_connectivity(cfg) -> CheckResult:
                 api_passphrase=cfg.polymarket.api_passphrase.get_secret_value(),
                 address=addr,
             )
-            mode = "signer" if idx == 0 else "funder"
             return CheckResult(
                 name="Polymarket CLOB auth",
                 passed=True,
                 value="HTTP 200",
-                note=f"authenticated balance/allowance check passed via {mode} address",
+                note=f"authenticated balance/allowance check passed via {label} address",
             )
         except Exception as exc:
-            failures.append(f"{addr}: {exc}")
+            failures.append(f"{label}={addr}: {exc}")
 
     return CheckResult(
         name="Polymarket CLOB auth",
