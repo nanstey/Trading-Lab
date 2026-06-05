@@ -39,6 +39,8 @@ import logging
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from nautilus_trader.config import StrategyConfig
+
 from trading_lab.strategies.base import TradingLabStrategy
 
 if TYPE_CHECKING:
@@ -49,6 +51,19 @@ if TYPE_CHECKING:
     from trading_lab.risk.kill_switch import KillSwitch
 
 log = logging.getLogger(__name__)
+
+
+class CrossVenueHedgeConfig(StrategyConfig, frozen=True):
+    strategy_id: str = "CROSS-VENUE-HEDGE-001"
+    observe_only: bool = False
+    poly_condition_id: str = ""
+    poly_yes_token_id: str = ""
+    poly_no_token_id: str = ""
+    hl_symbol: str = ""
+    hl_network: str = "mainnet"
+    hedge_ratio: float = 1.0
+    entry_threshold_bps: int = 100
+    order_size_usdc: float = 25.0
 
 
 class CrossVenueHedgeStrategy(TradingLabStrategy):

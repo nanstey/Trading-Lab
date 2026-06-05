@@ -5,13 +5,16 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from nautilus_trader.config import ImportableStrategyConfig, LoggingConfig, TradingNodeConfig
+from nautilus_trader.config import ImportableActorConfig, ImportableStrategyConfig, LoggingConfig, TradingNodeConfig
+from nautilus_trader.live.config import LiveExecEngineConfig
 from nautilus_trader.model.identifiers import TraderId
 
 from trading_lab.data.parquet_loader import make_instrument
 from trading_lab.research.cross_venue import CrossVenueSpec
+from trading_lab.venues.hyperliquid.factory import HyperliquidExecClientConfig
 from trading_lab.venues.hyperliquid.factory import HyperliquidDataClientConfig
 from trading_lab.venues.hyperliquid.instruments import make_hl_perpetual
+from trading_lab.venues.polymarket.factory import PolymarketExecClientConfig
 from trading_lab.venues.polymarket.factory import PolymarketDataClientConfig
 
 
@@ -87,7 +90,7 @@ class CrossVenueObserveRunner:
         self._duration_secs = duration_secs
 
     def build_plan(self) -> CrossVenueObservePlan:
-        node_config = build_cross_venue_paper_node_config(config=self._config, spec=self._spec)
+        node_config = build_cross_venue_observe_node_config(config=self._config, spec=self._spec)
         instruments = self._build_instruments()
         return CrossVenueObservePlan(
             slug=self._spec.slug,
@@ -229,13 +232,29 @@ def build_cross_venue_strategy_config(spec: CrossVenueSpec) -> ImportableStrateg
 
 
 
-def build_cross_venue_paper_node_config(*, config, spec: CrossVenueSpec) -> TradingNodeConfig:
+def build_cross_venue_paper_strategy_config(spec: CrossVenueSpec) -> ImportableStrategyConfig:
+    return ImportableStrategyConfig(
+        strategy_path="trading_lab.strategies.cross_venue_hedge:CrossVenueHedgeStrategy",
+        config_path="trading_lab.strategies.cross_venue_hedge:CrossVenueHedgeConfig",
+        config={
+            "observe_only": False,
+            "poly_condition_id": spec.polymarket.condition_id,
+            "poly_yes_token_id": spec.polymarket.yes_token_id,
+            "poly_no_token_id": spec.polymarket.no_token_id,
+            "hl_symbol": spec.hyperliquid.symbol or "",
+            "hl_network": spec.hyperliquid.network,
+        },
+    )
+
+
+
+def build_cross_venue_observe_node_config(*, config, spec: CrossVenueSpec) -> TradingNodeConfig:
     if spec.hyperliquid.kind != "perp":
         raise NotImplementedError("Hyperliquid outcome runtime is not integrated")
 
     hl_network = config.venues.hyperliquid.active(spec.hyperliquid.network)
     return TradingNodeConfig(
-        trader_id=TraderId(f"XVPAPER-{spec.slug[:15].upper()}"),
+        trader_id=TraderId(f"XVOBS-{spec.slug[:16].upper()}"),
         logging=LoggingConfig(log_level=getattr(config, "log_level", "INFO")),
         data_clients={
             "POLYMARKET": PolymarketDataClientConfig(
@@ -253,6 +272,73 @@ def build_cross_venue_paper_node_config(*, config, spec: CrossVenueSpec) -> Trad
         },
         exec_clients={},
         strategies=[build_cross_venue_strategy_config(spec)],
+        timeout_connection=30.0,
+    )
+
+
+
+def build_cross_venue_paper_node_config(*, config, spec: CrossVenueSpec) -> TradingNodeConfig:
+    if spec.hyperliquid.kind != "perp":
+        raise NotImplementedError("Hyperliquid outcome runtime is not integrated")
+
+    hl_network = config.venues.hyperliquid.active(spec.hyperliquid.network)
+    return TradingNodeConfig(
+        trader_id=TraderId(f"XVPAPER-{spec.slug[:15].upper()}"),
+        logging=LoggingConfig(log_level=getattr(config, "log_level", "INFO")),
+        exec_engine=LiveExecEngineConfig(reconciliation=False),
+        data_clients={
+            "POLYMARKET": PolymarketDataClientConfig(
+                http_url=config.polymarket.host,
+                api_key=config.polymarket.api_key,
+                api_secret=_secret_str(config.polymarket.api_secret),
+                api_passphrase=_secret_str(config.polymarket.api_passphrase),
+            ),
+            "HYPERLIQUID": HyperliquidDataClientConfig(
+                http_url=hl_network.api_url,
+                ws_url=hl_network.ws_url,
+                private_key=getattr(config.hyperliquid_secrets, "network_private_key")(spec.hyperliquid.network) or "",
+                account_address=getattr(config.hyperliquid_secrets, "network_account_address")(spec.hyperliquid.network) or "",
+            ),
+        },
+        exec_clients={
+            "POLYMARKET": PolymarketExecClientConfig(
+                http_url=config.polymarket.host,
+                private_key=_secret_str(config.polymarket.private_key),
+                api_key=config.polymarket.api_key,
+                api_secret=_secret_str(config.polymarket.api_secret),
+                api_passphrase=_secret_str(config.polymarket.api_passphrase),
+                exchange_address=config.polymarket.exchange_address,
+                is_paper=True,
+            ),
+            "HYPERLIQUID": HyperliquidExecClientConfig(
+                http_url=hl_network.api_url,
+                ws_url=hl_network.ws_url,
+                private_key=getattr(config.hyperliquid_secrets, "network_private_key")(spec.hyperliquid.network) or "",
+                account_address=getattr(config.hyperliquid_secrets, "network_account_address")(spec.hyperliquid.network) or "",
+                is_paper=True,
+            ),
+        },
+        actors=[
+            ImportableActorConfig(
+                actor_path="trading_lab.venues.polymarket.paper_fill:PolymarketPaperFillEngine",
+                config_path="trading_lab.venues.polymarket.paper_fill:PolymarketPaperFillConfig",
+                config={
+                    "component_id": "POLYMARKET-PAPER-FILL",
+                    "ioc_max_book_updates": 1,
+                    "account_currency": "USDC",
+                },
+            ),
+            ImportableActorConfig(
+                actor_path="trading_lab.venues.hyperliquid.paper_fill:HyperliquidPaperFillEngine",
+                config_path="trading_lab.venues.hyperliquid.paper_fill:HyperliquidPaperFillConfig",
+                config={
+                    "component_id": "HYPERLIQUID-PAPER-FILL",
+                    "ioc_max_book_updates": 1,
+                    "account_currency": "USDC",
+                },
+            ),
+        ],
+        strategies=[build_cross_venue_paper_strategy_config(spec)],
         timeout_connection=30.0,
     )
 

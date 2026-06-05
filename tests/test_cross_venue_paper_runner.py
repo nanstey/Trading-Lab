@@ -7,6 +7,7 @@ import pytest
 from trading_lab.research.cross_venue import CrossVenueSpec, HyperliquidLeg, PolymarketLeg
 from trading_lab.runner.cross_venue_paper import (
     build_cross_venue_paper_node_config,
+    build_cross_venue_paper_strategy_config,
     build_cross_venue_strategy_config,
 )
 
@@ -75,11 +76,24 @@ def test_build_cross_venue_strategy_config_is_observe_only() -> None:
     assert strategy_cfg.config["poly_yes_token_id"] == "111"
 
 
-def test_build_cross_venue_paper_node_config_includes_both_data_clients() -> None:
+def test_build_cross_venue_paper_strategy_config_uses_hedge_strategy() -> None:
+    strategy_cfg = build_cross_venue_paper_strategy_config(_perp_spec())
+
+    assert strategy_cfg.strategy_path == "trading_lab.strategies.cross_venue_hedge:CrossVenueHedgeStrategy"
+    assert strategy_cfg.config_path == "trading_lab.strategies.cross_venue_hedge:CrossVenueHedgeConfig"
+    assert strategy_cfg.config["observe_only"] is False
+    assert strategy_cfg.config["hl_symbol"] == "BTC"
+    assert strategy_cfg.config["poly_yes_token_id"] == "111"
+
+
+def test_build_cross_venue_paper_node_config_includes_both_data_and_exec_clients() -> None:
     node_cfg = build_cross_venue_paper_node_config(config=_Cfg(), spec=_perp_spec())
 
     assert set(node_cfg.data_clients.keys()) == {"POLYMARKET", "HYPERLIQUID"}
-    assert node_cfg.exec_clients == {}
+    assert set(node_cfg.exec_clients.keys()) == {"POLYMARKET", "HYPERLIQUID"}
+    assert len(node_cfg.actors) == 2
+    assert node_cfg.actors[0].actor_path.endswith("PolymarketPaperFillEngine")
+    assert node_cfg.actors[1].actor_path.endswith("HyperliquidPaperFillEngine")
     assert len(node_cfg.strategies) == 1
     assert node_cfg.timeout_connection == 30.0
 
