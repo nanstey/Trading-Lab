@@ -30,6 +30,12 @@ from typing import Any
 import pandas as pd
 
 from trading_lab.config import TradingConfig
+from trading_lab.data.parquet_loader import (
+    load_book_as_order_book_deltas,
+    load_trades_as_trade_ticks,
+    make_instrument,
+    reconstruct_book_from_trades,
+)
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +65,14 @@ class MarketBacktestResult:
     avg_win_usdc: float = 0.0
     avg_loss_usdc: float = 0.0
     longest_losing_streak: int = 0
+    execution_book_source: str = "unknown"
+    execution_used_reconstructed_book: bool = False
+    execution_snapshot_groups: int = 0
+    execution_median_visible_notional_usdc: float = 0.0
+    execution_depth_penalty: float = 1.0
+    execution_prob_fill_on_limit: float = 0.5
+    execution_prob_slippage: float = 0.5
+    execution_warnings: list[str] | None = None
 
 
 @dataclass
@@ -73,6 +87,8 @@ class BacktestRunResult:
     n_markets: int = 0
     n_markets_with_fills: int = 0
     max_longest_losing_streak: int = 0
+    n_markets_using_reconstructed_books: int = 0
+    aggregate_execution_warnings: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +101,8 @@ class BacktestRunResult:
             "n_markets": self.n_markets,
             "n_markets_with_fills": self.n_markets_with_fills,
             "max_longest_losing_streak": self.max_longest_losing_streak,
+            "n_markets_using_reconstructed_books": self.n_markets_using_reconstructed_books,
+            "aggregate_execution_warnings": self.aggregate_execution_warnings or [],
             "per_market": [
                 {
                     "condition_id": r.condition_id,
@@ -105,10 +123,132 @@ class BacktestRunResult:
                     "avg_win_usdc": r.avg_win_usdc,
                     "avg_loss_usdc": r.avg_loss_usdc,
                     "longest_losing_streak": r.longest_losing_streak,
+                    "execution_book_source": r.execution_book_source,
+                    "execution_used_reconstructed_book": r.execution_used_reconstructed_book,
+                    "execution_snapshot_groups": r.execution_snapshot_groups,
+                    "execution_median_visible_notional_usdc": r.execution_median_visible_notional_usdc,
+                    "execution_depth_penalty": r.execution_depth_penalty,
+                    "execution_prob_fill_on_limit": r.execution_prob_fill_on_limit,
+                    "execution_prob_slippage": r.execution_prob_slippage,
+                    "execution_warnings": r.execution_warnings or [],
                 }
                 for r in self.per_market
             ],
         }
+
+
+def _target_order_notional_usdc(strategy_params: dict[str, Any] | None) -> float:
+    params = strategy_params or {}
+    try:
+        return max(1.0, float(params.get("order_notional_usdc", 5.0)))
+    except Exception:
+        return 5.0
+
+
+
+def _execution_realism_from_orderbook_df(
+    orderbook_df: pd.DataFrame,
+    *,
+    order_notional_usdc: float,
+    book_source: str,
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    snapshot_groups = 0
+    median_visible_notional_usdc = 0.0
+    depth_penalty = 1.0
+    prob_fill_on_limit = 0.5
+    prob_slippage = 0.5
+    used_reconstructed_book = book_source != "snapshots"
+
+    if orderbook_df is not None and not orderbook_df.empty:
+        snapshot_groups = int(orderbook_df["timestamp"].nunique()) if "timestamp" in orderbook_df.columns else 0
+        visible_notionals: list[float] = []
+        if {"timestamp", "side", "price", "size"}.issubset(orderbook_df.columns):
+            grouped = orderbook_df.groupby(["timestamp", "side"], sort=True)
+            for (_ts, side), group in grouped:
+                side_df = group.sort_values("price", ascending=(str(side) == "ask"))
+                top = side_df.iloc[0]
+                visible_notionals.append(max(0.0, float(top["price"]) * float(top["size"])))
+        if visible_notionals:
+            visible_notionals.sort()
+            median_visible_notional_usdc = float(visible_notionals[len(visible_notionals) // 2])
+
+    if used_reconstructed_book:
+        warnings.append("reconstructed_book_fallback")
+        depth_penalty = min(depth_penalty, 0.5)
+        prob_fill_on_limit = min(prob_fill_on_limit, 0.35)
+        prob_slippage = max(prob_slippage, 0.7)
+
+    if median_visible_notional_usdc > 0.0:
+        depth_penalty = min(depth_penalty, min(1.0, median_visible_notional_usdc / max(order_notional_usdc, 1e-9)))
+        if depth_penalty < 1.0:
+            warnings.append("shallow_visible_depth")
+            prob_fill_on_limit = min(prob_fill_on_limit, max(0.15, 0.5 * depth_penalty))
+            prob_slippage = max(prob_slippage, min(0.9, 0.5 + 0.5 * (1.0 - depth_penalty)))
+
+    return {
+        "book_source": book_source,
+        "used_reconstructed_book": used_reconstructed_book,
+        "snapshot_groups": snapshot_groups,
+        "median_visible_notional_usdc": round(median_visible_notional_usdc, 6),
+        "depth_penalty": round(depth_penalty, 6),
+        "prob_fill_on_limit": round(prob_fill_on_limit, 6),
+        "prob_slippage": round(prob_slippage, 6),
+        "warnings": warnings,
+    }
+
+
+
+def _load_execution_inputs(
+    *,
+    catalog,
+    token_id: str,
+    instrument,
+    start: datetime,
+    end: datetime,
+    order_notional_usdc: float,
+) -> tuple[list[Any], dict[str, Any]]:
+    orderbook_df = catalog.read_orderbook_history(token_id, start, end)
+    snapshot_deltas = load_book_as_order_book_deltas(catalog, token_id, instrument, start, end)
+    if snapshot_deltas:
+        realism = _execution_realism_from_orderbook_df(
+            orderbook_df,
+            order_notional_usdc=order_notional_usdc,
+            book_source="snapshots",
+        )
+        return snapshot_deltas, realism
+
+    reconstructed = reconstruct_book_from_trades(catalog, token_id, instrument, start, end)
+    realism = _execution_realism_from_orderbook_df(
+        pd.DataFrame(),
+        order_notional_usdc=order_notional_usdc,
+        book_source="reconstructed_trades",
+    )
+    return reconstructed, realism
+
+
+
+def _combine_execution_realism(*parts: dict[str, Any]) -> dict[str, Any]:
+    warnings: list[str] = []
+    for part in parts:
+        for warning in part.get("warnings", []):
+            if warning not in warnings:
+                warnings.append(warning)
+    sources = {str(p.get("book_source", "unknown")) for p in parts}
+    if len(sources) == 1:
+        book_source = next(iter(sources))
+    else:
+        book_source = "mixed"
+    return {
+        "book_source": book_source,
+        "used_reconstructed_book": any(bool(p.get("used_reconstructed_book")) for p in parts),
+        "snapshot_groups": int(sum(int(p.get("snapshot_groups", 0)) for p in parts)),
+        "median_visible_notional_usdc": min(float(p.get("median_visible_notional_usdc", 0.0)) for p in parts) if parts else 0.0,
+        "depth_penalty": min(float(p.get("depth_penalty", 1.0)) for p in parts) if parts else 1.0,
+        "prob_fill_on_limit": min(float(p.get("prob_fill_on_limit", 0.5)) for p in parts) if parts else 0.5,
+        "prob_slippage": max(float(p.get("prob_slippage", 0.5)) for p in parts) if parts else 0.5,
+        "warnings": warnings,
+    }
 
 
 class BacktestRunner:
@@ -322,11 +462,6 @@ class BacktestRunner:
         from nautilus_trader.model.objects import Money
 
         from trading_lab.data.catalog import DataCatalog
-        from trading_lab.data.parquet_loader import (
-            load_trades_as_trade_ticks,
-            make_instrument,
-            reconstruct_book_from_trades,
-        )
 
         log.info(
             "backtest start condition=%s yes=%s.. no=%s..",
@@ -338,18 +473,37 @@ class BacktestRunner:
         data_catalog = DataCatalog(self._data_dir)
         yes_instr = make_instrument(yes_token_id, condition_id, question=question)
         no_instr = make_instrument(no_token_id, condition_id, question=question)
+        order_notional_usdc = _target_order_notional_usdc(self._strategy_params)
 
         yes_ticks = load_trades_as_trade_ticks(data_catalog, yes_token_id, yes_instr, start, end)
         no_ticks = load_trades_as_trade_ticks(data_catalog, no_token_id, no_instr, start, end)
-        yes_deltas = reconstruct_book_from_trades(data_catalog, yes_token_id, yes_instr, start, end)
-        no_deltas = reconstruct_book_from_trades(data_catalog, no_token_id, no_instr, start, end)
+        yes_deltas, yes_realism = _load_execution_inputs(
+            catalog=data_catalog,
+            token_id=yes_token_id,
+            instrument=yes_instr,
+            start=start,
+            end=end,
+            order_notional_usdc=order_notional_usdc,
+        )
+        no_deltas, no_realism = _load_execution_inputs(
+            catalog=data_catalog,
+            token_id=no_token_id,
+            instrument=no_instr,
+            start=start,
+            end=end,
+            order_notional_usdc=order_notional_usdc,
+        )
+        combined_realism = _combine_execution_realism(yes_realism, no_realism)
 
         log.info(
-            "data loaded yes_ticks=%d no_ticks=%d yes_deltas=%d no_deltas=%d",
+            "data loaded yes_ticks=%d no_ticks=%d yes_deltas=%d no_deltas=%d source=%s depth=$%.2f warnings=%s",
             len(yes_ticks),
             len(no_ticks),
             len(yes_deltas),
             len(no_deltas),
+            combined_realism["book_source"],
+            combined_realism["median_visible_notional_usdc"],
+            combined_realism["warnings"],
         )
 
         if not (yes_ticks or no_ticks):
@@ -375,6 +529,14 @@ class BacktestRunner:
                 avg_win_usdc=0.0,
                 avg_loss_usdc=0.0,
                 longest_losing_streak=0,
+                execution_book_source=combined_realism["book_source"],
+                execution_used_reconstructed_book=bool(combined_realism["used_reconstructed_book"]),
+                execution_snapshot_groups=int(combined_realism["snapshot_groups"]),
+                execution_median_visible_notional_usdc=float(combined_realism["median_visible_notional_usdc"]),
+                execution_depth_penalty=float(combined_realism["depth_penalty"]),
+                execution_prob_fill_on_limit=float(combined_realism["prob_fill_on_limit"]),
+                execution_prob_slippage=float(combined_realism["prob_slippage"]),
+                execution_warnings=list(combined_realism["warnings"]),
             )
 
         # NautilusTrader's Rust logger is a process-global singleton; passing
@@ -401,7 +563,7 @@ class BacktestRunner:
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH,
             starting_balances=[Money(initial_capital_usdc, USDC)],
-            fill_model=self._build_fill_model(),
+            fill_model=self._build_fill_model(combined_realism),
             latency_model=self._build_latency_model(),
             book_type=BookType.L2_MBP,
             trade_execution=True,
@@ -420,7 +582,13 @@ class BacktestRunner:
         engine.run()
 
         result = self._extract_result(
-            engine, condition_id, question, yes_token_id, no_token_id, len(yes_ticks) + len(no_ticks)
+            engine,
+            condition_id,
+            question,
+            yes_token_id,
+            no_token_id,
+            len(yes_ticks) + len(no_ticks),
+            execution_realism=combined_realism,
         )
         engine.dispose()
         return result
@@ -477,11 +645,17 @@ class BacktestRunner:
             strategy._initial_pair = (condition_id, yes_instr.id, no_instr.id)  # type: ignore[attr-defined]
         return strategy
 
-    def _build_fill_model(self):
+    def _build_fill_model(self, execution_realism: dict[str, Any] | None = None):
         from nautilus_trader.backtest.models import FillModel
 
-        # Pessimistic by default: PM books are shallow, partials are common.
-        return FillModel(prob_fill_on_limit=0.5, prob_slippage=0.5)
+        realism = execution_realism or {}
+        # Snapshot-first execution inputs keep the old pessimistic defaults.
+        # Reconstructed-book fallback and shallow visible depth lower fill odds
+        # and raise slippage further.
+        return FillModel(
+            prob_fill_on_limit=float(realism.get("prob_fill_on_limit", 0.5)),
+            prob_slippage=float(realism.get("prob_slippage", 0.5)),
+        )
 
     def _build_latency_model(self):
         from nautilus_trader.backtest.models import LatencyModel
@@ -497,6 +671,8 @@ class BacktestRunner:
         yes_token_id: str,
         no_token_id: str,
         n_ticks: int,
+        *,
+        execution_realism: dict[str, Any] | None = None,
     ) -> MarketBacktestResult:
         from nautilus_trader.model.identifiers import Venue
 
@@ -556,6 +732,7 @@ class BacktestRunner:
             # strategies where pair-pairing doesn't make sense (no fills).
             sharpe, max_dd_pct = self._equity_metrics(account_df)
             pnl = self._terminal_pnl(engine, orders_df, venue)
+        realism = execution_realism or {}
         return MarketBacktestResult(
             condition_id=condition_id,
             question=question,
@@ -577,6 +754,14 @@ class BacktestRunner:
             avg_win_usdc=float(trade_metrics.get("avg_win", 0.0)),
             avg_loss_usdc=float(trade_metrics.get("avg_loss", 0.0)),
             longest_losing_streak=int(longest_losing_streak),
+            execution_book_source=str(realism.get("book_source", "unknown")),
+            execution_used_reconstructed_book=bool(realism.get("used_reconstructed_book", False)),
+            execution_snapshot_groups=int(realism.get("snapshot_groups", 0)),
+            execution_median_visible_notional_usdc=float(realism.get("median_visible_notional_usdc", 0.0)),
+            execution_depth_penalty=float(realism.get("depth_penalty", 1.0)),
+            execution_prob_fill_on_limit=float(realism.get("prob_fill_on_limit", 0.5)),
+            execution_prob_slippage=float(realism.get("prob_slippage", 0.5)),
+            execution_warnings=list(realism.get("warnings", [])),
         )
 
     def _trade_metrics(self, per_pair_pnls: list[float]) -> dict[str, float]:
@@ -816,6 +1001,8 @@ def _aggregate(results: list[MarketBacktestResult]) -> BacktestRunResult:
             n_markets=0,
             n_markets_with_fills=0,
             max_longest_losing_streak=0,
+            n_markets_using_reconstructed_books=0,
+            aggregate_execution_warnings=[],
         )
     total_pnl = sum(r.pnl_usdc for r in results)
     total_fills = sum(r.n_fills for r in results)
@@ -823,6 +1010,11 @@ def _aggregate(results: list[MarketBacktestResult]) -> BacktestRunResult:
     total_pair_trades = sum(r.n_pair_trades for r in results)
     mean_sharpe = sum(r.sharpe for r in results) / len(results)
     n_markets_with_fills = sum(1 for r in results if r.n_fills > 0)
+    aggregate_execution_warnings: list[str] = []
+    for result in results:
+        for warning in result.execution_warnings or []:
+            if warning not in aggregate_execution_warnings:
+                aggregate_execution_warnings.append(warning)
     return BacktestRunResult(
         per_market=results,
         aggregate_pnl_usdc=total_pnl,
@@ -834,6 +1026,8 @@ def _aggregate(results: list[MarketBacktestResult]) -> BacktestRunResult:
         n_markets=len(results),
         n_markets_with_fills=n_markets_with_fills,
         max_longest_losing_streak=max((r.longest_losing_streak for r in results), default=0),
+        n_markets_using_reconstructed_books=sum(1 for r in results if r.execution_used_reconstructed_book),
+        aggregate_execution_warnings=aggregate_execution_warnings,
     )
 
 
