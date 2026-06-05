@@ -176,8 +176,8 @@ def _run_one(
     initial_capital: float,
     test_only: bool,
     use_funding: bool,
-) -> tuple[float, float, int, float]:
-    """Run one (config, fold) cell. Returns (sharpe, pnl, n_trades, max_dd_pct)."""
+) -> dict[str, float | int]:
+    """Run one (config, fold) cell and return evaluation metrics."""
     start = window.test_start if test_only else window.train_start
     end = window.test_end if test_only else window.train_end
     result = runner.run_multi_market(
@@ -193,7 +193,65 @@ def _run_one(
         use_funding=use_funding,
     )
     m = result.portfolio_metrics
-    return float(m.sharpe), float(m.extras.get("total_pnl", 0.0)), int(m.n_trades), float(m.max_drawdown_pct)
+    total_pnl = float(m.extras.get("total_pnl", 0.0))
+    n_trades = int(m.n_trades)
+    n_markets = int(m.extras.get("n_markets_total", len(result.per_market)))
+    n_markets_with_fills = sum(1 for market in result.per_market if market.n_fills > 0)
+    return {
+        "sharpe": float(m.sharpe),
+        "pnl": total_pnl,
+        "n_trades": n_trades,
+        "max_dd_pct": float(m.max_drawdown_pct),
+        "expectancy_usdc": (total_pnl / n_trades) if n_trades > 0 else 0.0,
+        "n_fills": n_trades,
+        "n_orders": 0,
+        "fill_rate": 0.0,
+        "n_markets": n_markets,
+        "n_markets_with_fills": n_markets_with_fills,
+    }
+
+
+def _config_methodology(
+    *,
+    oos_mean_sharpe: float,
+    oos_total_pnl: float,
+    oos_total_trades: int,
+    oos_min_trades: int,
+    oos_worst_dd: float,
+    n_markets: int,
+    n_markets_with_fills: int,
+) -> tuple[dict[str, Any], str, str, float]:
+    from trading_lab.agent.lifecycle import State
+    from trading_lab.research.eval_methodology import assess_backtest
+    from trading_lab.research.experiment_reporting import score_backtest_result
+
+    expectancy = (oos_total_pnl / oos_total_trades) if oos_total_trades > 0 else 0.0
+    decision = assess_backtest(
+        state_enum=State,
+        sharpe=oos_mean_sharpe,
+        max_dd_pct=oos_worst_dd,
+        n_trades=oos_total_trades,
+        pnl_usdc=oos_total_pnl,
+        expectancy_usdc=expectancy,
+        fill_rate=0.0,
+        n_orders=0,
+        n_fills=oos_total_trades,
+        n_markets=n_markets,
+        n_markets_with_fills=n_markets_with_fills,
+    )
+    score = score_backtest_result(
+        {
+            "methodology": decision.methodology,
+            "methodology_decision_state": decision.new_state,
+            "pnl": oos_total_pnl,
+            "expectancy_usdc": expectancy,
+            "fill_rate": 0.0,
+            "sharpe": oos_mean_sharpe,
+            "max_dd": oos_worst_dd,
+            "n_markets_with_fills": n_markets_with_fills,
+        }
+    )
+    return decision.methodology, decision.new_state, decision.rejection_category, score
 
 
 def _decide(
@@ -360,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         for ci, cfg in enumerate(grid):
             try:
                 # Train
-                ts, _tp, _tn, _td = _run_one(
+                train_metrics = _run_one(
                     runner,
                     fm=fm,
                     coins=coins,
@@ -371,9 +429,10 @@ def main(argv: list[str] | None = None) -> int:
                     test_only=False,
                     use_funding=use_funding,
                 )
+                ts = float(train_metrics["sharpe"])
                 train_sharpe[fi, ci] = ts
                 # Test (OOS)
-                sh, pn, nt, dd = _run_one(
+                test_metrics = _run_one(
                     runner,
                     fm=fm,
                     coins=coins,
@@ -384,6 +443,10 @@ def main(argv: list[str] | None = None) -> int:
                     test_only=True,
                     use_funding=use_funding,
                 )
+                sh = float(test_metrics["sharpe"])
+                pn = float(test_metrics["pnl"])
+                nt = int(test_metrics["n_trades"])
+                dd = float(test_metrics["max_dd_pct"])
                 test_sharpe[fi, ci] = sh
                 test_pnl[fi, ci] = pn
                 test_trades[fi, ci] = nt
@@ -401,6 +464,9 @@ def main(argv: list[str] | None = None) -> int:
                     "test_pnl": pn,
                     "test_trades": int(nt),
                     "test_max_dd_pct": dd,
+                    "test_expectancy_usdc": float(test_metrics["expectancy_usdc"]),
+                    "test_n_markets": int(test_metrics["n_markets"]),
+                    "test_n_markets_with_fills": int(test_metrics["n_markets_with_fills"]),
                 })
             except Exception as exc:  # noqa: BLE001
                 log.exception("fold=%d cfg=%d failed", fi, ci)
@@ -412,9 +478,55 @@ def main(argv: list[str] | None = None) -> int:
     config_oos_mean_sharpe = np.nanmean(test_sharpe, axis=0)
     config_oos_total_pnl = np.nansum(test_pnl, axis=0)
     config_oos_min_trades = np.min(test_trades, axis=0)
-    best_idx = int(np.nanargmax(config_oos_mean_sharpe))
-    best_params = grid[best_idx]
-    best_sharpe = float(config_oos_mean_sharpe[best_idx])
+    config_oos_total_trades = np.sum(test_trades, axis=0)
+    config_oos_worst_dd = np.nanmin(test_dd, axis=0)
+
+    per_config: list[dict[str, Any]] = []
+    for ci, cfg in enumerate(grid):
+        n_markets_with_fills = int(max((run.get("test_n_markets_with_fills", 0) for run in all_runs if run.get("config_idx") == ci and "error" not in run), default=0))
+        n_markets = int(max((run.get("test_n_markets", len(coins)) for run in all_runs if run.get("config_idx") == ci and "error" not in run), default=len(coins)))
+        methodology, methodology_state, methodology_category, methodology_score = _config_methodology(
+            oos_mean_sharpe=float(config_oos_mean_sharpe[ci]),
+            oos_total_pnl=float(config_oos_total_pnl[ci]),
+            oos_total_trades=int(config_oos_total_trades[ci]),
+            oos_min_trades=int(config_oos_min_trades[ci]),
+            oos_worst_dd=float(config_oos_worst_dd[ci]),
+            n_markets=n_markets,
+            n_markets_with_fills=n_markets_with_fills,
+        )
+        per_config.append(
+            {
+                "config_idx": ci,
+                "params": cfg,
+                "oos_mean_sharpe": float(config_oos_mean_sharpe[ci]),
+                "oos_total_pnl": float(config_oos_total_pnl[ci]),
+                "oos_total_trades": int(config_oos_total_trades[ci]),
+                "oos_min_trades": int(config_oos_min_trades[ci]),
+                "oos_worst_dd": float(config_oos_worst_dd[ci]),
+                "expectancy_usdc": float(config_oos_total_pnl[ci] / config_oos_total_trades[ci]) if int(config_oos_total_trades[ci]) > 0 else 0.0,
+                "n_markets": n_markets,
+                "n_markets_with_fills": n_markets_with_fills,
+                "methodology": methodology,
+                "methodology_state": methodology_state,
+                "methodology_category": methodology_category,
+                "methodology_score": methodology_score,
+            }
+        )
+
+    per_config.sort(
+        key=lambda c: (
+            c["methodology_score"],
+            c["oos_mean_sharpe"],
+            c["oos_total_pnl"],
+            c["expectancy_usdc"],
+            -abs(c["oos_worst_dd"]),
+        ),
+        reverse=True,
+    )
+    best = per_config[0]
+    best_idx = int(best["config_idx"])
+    best_params = best["params"]
+    best_sharpe = float(best["oos_mean_sharpe"])
 
     # Per-fold best params (for stability)
     per_fold_best: list[dict[str, float]] = []
@@ -466,11 +578,34 @@ def main(argv: list[str] | None = None) -> int:
         "n_folds": n_folds,
         "n_configs": n_cfgs,
         "walk_forward": [w.as_dict() for w in windows],
+        "candidate_ranking": [
+            {
+                "config_idx": c["config_idx"],
+                "params": c["params"],
+                "score": c["methodology_score"],
+                "state": c["methodology_state"],
+                "category": c["methodology_category"],
+                "sharpe": c["oos_mean_sharpe"],
+                "pnl": c["oos_total_pnl"],
+                "expectancy_usdc": c["expectancy_usdc"],
+                "n_trades": c["oos_total_trades"],
+                "min_oos_trades": c["oos_min_trades"],
+                "max_dd": c["oos_worst_dd"],
+                "n_markets": c["n_markets"],
+                "n_markets_with_fills": c["n_markets_with_fills"],
+                "methodology": c["methodology"],
+            }
+            for c in per_config
+        ],
         "best_config_idx": best_idx,
         "best_params": best_params,
         "best_oos_mean_sharpe": best_sharpe,
         "best_oos_total_pnl": float(config_oos_total_pnl[best_idx]),
         "best_oos_min_trades": int(config_oos_min_trades[best_idx]),
+        "best_methodology_score": float(best["methodology_score"]),
+        "best_methodology": best["methodology"],
+        "best_methodology_state": best["methodology_state"],
+        "best_methodology_category": best["methodology_category"],
         "deflated_sharpe": dsr,
         "pbo": {"pbo": pbo["pbo"], "n_splits": pbo["n_evaluated_splits"]},
         "parameter_stability": stability,
