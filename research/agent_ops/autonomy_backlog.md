@@ -1,6 +1,6 @@
 # Gambit Autonomy Backlog
 
-Last updated: 2026-06-06 01:26 PDT
+Last updated: 2026-06-06 01:56 PDT
 
 ## Mission
 Develop, test, and deploy increasingly profitable trading strategies without compromising rigor, risk controls, or capital discipline.
@@ -39,7 +39,7 @@ Develop, test, and deploy increasingly profitable trading strategies without com
 - [ ] Verify the intended Polymarket wallet mode (EOA vs proxy/deposit), set the matching `POLY_FUNDER` / `POLY_SIGNATURE_TYPE`, and refresh L2 credentials if needed; current equity telemetry still leaves authenticated refresh on `paper-fallback` despite public reachability and prior L1 success.
 - [x] Decide whether the paper fallback source is acceptable for unattended paper operation or whether PAPER should pause until real venue equity is observable again.
 - [ ] Re-measure `hermes insights --days 1` after a clean window of the intentional 15-minute heartbeat plus trimmed briefing prompts; keep cron-vs-Telegram attribution precise, but treat this as secondary to the telemetry blocker unless spend spikes materially.
-- [ ] Separate cron-spend control from broader Hermes usage so future cost triage does not misattribute Telegram-heavy usage to the autonomy crons alone.
+- [x] Separate cron-spend control from broader Hermes usage so future cost triage does not misattribute Telegram-heavy usage to the autonomy crons alone (`research/agent_ops/autonomy_usage_wip.md` now includes a per-job session-store query grouped by cron job id).
 - [ ] Start the next research cycle only after telemetry risk is reduced or explicitly accepted and the unattended PAPER fallback policy is decided.
 
 ## Blockers / approval gates
@@ -53,6 +53,7 @@ Develop, test, and deploy increasingly profitable trading strategies without com
 - The auth split remains concrete: the signer derived from `POLY_PRIVATE_KEY` is `0x5195...68c0`, Gamma `public-profile` reports proxy wallet `0x5e55...40db`, and current Polymarket quickstart docs say new API users should use a deposit wallet with signature type `3` while existing EOA/proxy users must keep the matching explicit funder/signature-type pair.
 - Resulting next action is now tighter: operator-side wallet-target confirmation plus refreshed L2 credentials aligned to that chosen mode remains the blocker for authenticated venue-equity telemetry.
 - `hermes insights --days 1` from this run shows 39.7M total tokens over the last day, with cron at 22.8M across 36 sessions, Telegram at 12.3M across 2 sessions, and CLI at 4.6M across 5 sessions; the durable summary artifact now lives at `research/agent_ops/autonomy_usage_wip.md` and should be the default reference for future spend/WIP snapshots.
+- The durable usage artifact now includes a narrower per-job attribution method: grouping `source='cron'` sessions in `~/.hermes/profiles/gambit/state.db` by the embedded cron job id shows the last-24h control-plane spend was dominated by `gambit-autonomy-heartbeat` (32 sessions, 20.19M session-store tokens), with planner and briefings much smaller.
 - The unattended-PAPER pause remains the correct policy while telemetry is unresolved, and board gating still keeps AlphaInsider/research advancement behind `t_01360f4c`.
 - `hermes insights --days 1` from the prior run still shows heavy control-plane usage: 41.1M total tokens over the last day, with cron at 24.3M tokens across 33 sessions and Telegram at 12.2M across 3 sessions. Cost remains worth tracking, but telemetry stays the primary blocker.
 
