@@ -1,6 +1,6 @@
 # Gambit Autonomy Backlog
 
-Last updated: 2026-06-05 23:12 PDT
+Last updated: 2026-06-06 01:26 PDT
 
 ## Mission
 Develop, test, and deploy increasingly profitable trading strategies without compromising rigor, risk controls, or capital discipline.
@@ -23,38 +23,38 @@ Develop, test, and deploy increasingly profitable trading strategies without com
 6. Deliver scheduled briefings at 09:00 and 21:00 local time.
 
 ## Current priorities
-- Repair degraded venue-equity telemetry before trusting pct-of-equity paper caps.
-- Reduce autonomy control-plane spend before expanding research scope; the latest 1-day reading shows 17.50M cron tokens across 21 cron sessions and 63.18M total tokens across all surfaces, with 45.68M of the total coming from Telegram rather than cron. Cost control is still required, but attribution needs to stay precise.
-- Start the next research cycle from the highest-signal PROPOSED Polymarket slug only after the telemetry risk is either fixed or explicitly accepted and the control loop is leaner.
-- Keep paused legacy Trading-Lab crons paused until the new loop proves it covers the needed control-plane duties.
+- Make Polymarket authenticated venue-equity telemetry the dominant objective for the next 4-12 hours; until it is fixed or explicitly accepted, pct-of-equity PAPER evidence remains weak.
+- Use the current PAPER lane as the forcing function: `tick-mean-revert` is still the only PAPER slug, and `portfolio_status.py --refresh --no-event` still falls back to `venue_equity_source="paper-fallback"`, leaving it on a synthetic 300 USDC effective cap.
+- Operational policy for now: do not start unattended PAPER sessions while venue equity remains on `paper-fallback`; resume only after real venue equity is observable again or the operator explicitly accepts the fallback.
+- Treat the current 15-minute heartbeat cadence as an explicit operator override until changed again; do not frame it as drift while the live scheduler, prompt, and operator intent are aligned.
+- Keep cost attribution precise but secondary for now: cron-spend re-measurement still matters, but it should not displace the telemetry blocker unless spend spikes materially.
+- Defer advancing the next PROPOSED research slug until telemetry risk is reduced or explicitly accepted and the unattended-PAPER fallback policy remains unchanged.
 
 ## Open TODOs
 - [x] Audit current cron/research/paper coverage against the autonomy mandate.
 - [x] Install hourly heartbeat cron.
-- [x] Correct the heartbeat cron schedule mismatch (it regressed back to `every 15m` by 2026-06-05 22:44 PDT; `gambit-autonomy-heartbeat` was reset to `every 1h` and its prompt header now says `hourly autonomy heartbeat`).
 - [x] Install 09:00 and 21:00 briefing crons.
-- [ ] Define how token-usage and work-in-progress are summarized durably.
-- [ ] Re-measure `hermes insights --days 1` after ~24h of the truly-hourly heartbeat plus trimmed briefing prompts; if cron spend is still too high, decide between further no-agent/scripted conversion and additional prompt cuts.
-- [ ] Separate cron-spend control from broader Hermes usage: the latest 1-day reading shows cron at 17.50M tokens but Telegram at 45.68M, so future cost triage should not misattribute total token pressure to the autonomy crons alone.
-- [ ] Identify what is rewriting `gambit-autonomy-heartbeat` back to `every 15m`; the schedule regressed again between the prior 22:44 PDT correction and this 23:12 PDT run, so a second manual edit is not a durable fix.
-- [x] Investigate the failed optimize-queue cron run and remediate if needed.
-- [ ] Verify the intended Polymarket wallet mode (EOA vs proxy/deposit), set the matching `POLY_FUNDER` / `POLY_SIGNATURE_TYPE`, and refresh L2 credentials if needed; current equity telemetry fails authenticated CLOB checks with HTTP 401 for both the signer and discovered proxy wallet even though L1 `derive-api-key` still works.
-- [ ] Decide whether the paper fallback source is acceptable for unattended paper operation or whether PAPER should pause until real venue equity is observable again.
-- [ ] Start the next research cycle with system health and queue review.
+- [x] Resolve the apparent heartbeat schedule regression: the live `every 15m` cadence came from an explicit operator Telegram request at 2026-06-05 19:30 PDT, so it is not an unexplained rewrite.
+- [x] Define how token-usage and work-in-progress are summarized durably (`research/agent_ops/autonomy_usage_wip.md`).
+- [ ] Verify the intended Polymarket wallet mode (EOA vs proxy/deposit), set the matching `POLY_FUNDER` / `POLY_SIGNATURE_TYPE`, and refresh L2 credentials if needed; current equity telemetry still leaves authenticated refresh on `paper-fallback` despite public reachability and prior L1 success.
+- [x] Decide whether the paper fallback source is acceptable for unattended paper operation or whether PAPER should pause until real venue equity is observable again.
+- [ ] Re-measure `hermes insights --days 1` after a clean window of the intentional 15-minute heartbeat plus trimmed briefing prompts; keep cron-vs-Telegram attribution precise, but treat this as secondary to the telemetry blocker unless spend spikes materially.
+- [ ] Separate cron-spend control from broader Hermes usage so future cost triage does not misattribute Telegram-heavy usage to the autonomy crons alone.
+- [ ] Start the next research cycle only after telemetry risk is reduced or explicitly accepted and the unattended PAPER fallback policy is decided.
 
 ## Blockers / approval gates
 - New live deployments require explicit user approval.
 - Any paid-data or paid-tool route is disallowed.
 
 ## Latest heartbeat findings
-- 23:12 PDT risk remains constrained: `data/.kill_switch` is still absent and there are no live `paper_run_v2.py`, `live_run.py`, or `run_ingestion.py` processes.
-- The highest-value issue was another autonomy-heartbeat schedule regression: `hermes cron list` and `~/.hermes/profiles/gambit/cron/jobs.json` both showed `gambit-autonomy-heartbeat` back at `every 15m`, and the stored prompt header had also drifted back to `15-minute autonomy heartbeat`.
-- Highest-value safe action this run was to repair that drift again with `hermes cron edit b301392adfc4 --schedule 'every 1h' --prompt ...`, restoring both the interval and the prompt header to hourly.
-- Durable verification passed: `hermes cron list` now shows the heartbeat at `every 60m` with next run `2026-06-06T00:12:24.070763-07:00`, and `~/.hermes/profiles/gambit/cron/jobs.json` now records `minutes: 60`, `schedule_display: every 60m`, and the first prompt line `You are Gambit running the hourly autonomy heartbeat...`.
-- Lifecycle queue shape is unchanged: `tick-mean-revert` remains the only PAPER slug; `hl-donchian-alts-trial` and `hl-smoke` remain `PAPER_READY`; there are still no LIVE slugs; leading Polymarket `PROPOSED` slugs remain `polymarket-ladder-maker`, `polymarket-sticky-btc-leadlag`, `polymarket-btc-5m-price-field`, and `polymarket-endcycle-sniper`.
-- Budget ledger for today remains idle: `llm_tokens=0`, `backtests=0`, `paper_starts=0`, `live_starts=0`.
-- Paper operations are mechanically quiet but still economically degraded: `scripts/portfolio_status.py --refresh --no-event` again failed both data-api and CLOB equity refreshes, then fell back to `venue_equity_source="paper-fallback"`, leaving `tick-mean-revert` capped off a synthetic 1000 USDC venue equity and an effective 300 USDC per-slug cap.
-- Next best action is to root-cause the recurring heartbeat schedule rewrite before trusting the hourly cadence or using it for a clean 24h spend sample; the Polymarket authenticated-equity telemetry failure remains the main paper-ops blocker behind that.
+- 01:26 PDT risk remains constrained: `data/.kill_switch` is absent.
+- Fresh `.venv/bin/python scripts/check_env.py --verbose` still failed the authenticated Polymarket CLOB probe: public PM data API and Hyperliquid API are healthy, but `/balance-allowance` returned 401 for every candidate Polymarket address.
+- A new bounded config check narrowed the telemetry blocker: the active Trading-Lab runtime has `POLY_FUNDER=None` and `POLY_SIGNATURE_TYPE=None`, so the repo is not currently expressing any non-EOA wallet mode.
+- The auth split remains concrete: the signer derived from `POLY_PRIVATE_KEY` is `0x5195...68c0`, Gamma `public-profile` reports proxy wallet `0x5e55...40db`, and current Polymarket quickstart docs say new API users should use a deposit wallet with signature type `3` while existing EOA/proxy users must keep the matching explicit funder/signature-type pair.
+- Resulting next action is now tighter: operator-side wallet-target confirmation plus refreshed L2 credentials aligned to that chosen mode remains the blocker for authenticated venue-equity telemetry.
+- `hermes insights --days 1` from this run shows 39.7M total tokens over the last day, with cron at 22.8M across 36 sessions, Telegram at 12.3M across 2 sessions, and CLI at 4.6M across 5 sessions; the durable summary artifact now lives at `research/agent_ops/autonomy_usage_wip.md` and should be the default reference for future spend/WIP snapshots.
+- The unattended-PAPER pause remains the correct policy while telemetry is unresolved, and board gating still keeps AlphaInsider/research advancement behind `t_01360f4c`.
+- `hermes insights --days 1` from the prior run still shows heavy control-plane usage: 41.1M total tokens over the last day, with cron at 24.3M tokens across 33 sessions and Telegram at 12.2M across 3 sessions. Cost remains worth tracking, but telemetry stays the primary blocker.
 
 ## Notes for future runs
 - Semi-daily briefings should cover the prior 12 hours and the intended next 12 hours.
@@ -64,4 +64,4 @@ Develop, test, and deploy increasingly profitable trading strategies without com
 - Cron fix and its regression test were committed and pushed on `main` as `4bbb029` (`fix(cron): apply hl optimize lifecycle transitions`).
 - Unrelated dirty file still present: `research/paper_reports/tick-mean-revert_20260604.md`.
 - The enhanced Polymarket auth-diagnostic patch is now committed and pushed on `main` as `1109041` (`fix(env): probe polymarket proxy wallet in auth check`).
-- Next best action: re-measure `hermes insights --days 1` after roughly 24 hours of the re-corrected hourly heartbeat and trimmed briefing prompts; if cron spend is still unattractive, trim or scriptify further only after keeping the auth-telemetry blocker front and center.
+- Dominant next-window success condition: materially narrow the Polymarket wallet-mode/L2-auth uncertainty behind `paper-fallback` so authenticated venue equity becomes trustworthy again, or obtain an explicit operator waiver to run unattended PAPER on fallback telemetry.
