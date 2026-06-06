@@ -31,7 +31,10 @@ Known source evidence gathered so far:
   - `Ichimoku Kinko Hyo: ETH 3h Strategy` — 59.89% year, 138% 5Y, 197 subscribers
   - `RSI2 Scapling` — 52.38% year, 67.86% 5Y, 8 subscribers
   - `MA Cross` — 46.61% year, 138% 5Y, 5 subscribers
-- TradingView pages expose at least some strategy rules and open-source status, but direct Pine access may require brittle handling or fallbacks.
+- Tracer-bullet result (`research/captures/alphainsider/2026-06-05-tracer-bullet.md`): the funnel is viable but uneven.
+  - `RSI2 Scapling` was recovered end-to-end, including Pine source.
+  - `Noro's TrendMA Strategy` and `Ichimoku Kinko Hyo: ETH 3h Strategy` exposed TradingView links that now return publication-not-found.
+  - Direct HTTP fetch is not enough for reliable Pine recovery; browser-assisted extraction is part of the real workflow.
 
 Selection principles:
 1. Prefer mechanistic clarity over raw return.
