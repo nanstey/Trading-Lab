@@ -224,7 +224,9 @@ async def check_polymarket_auth_connectivity(cfg) -> CheckResult:
         value="unauthorized",
         note=(
             "Authenticated CLOB check failed for all candidate addresses; "
-            "stale POLY_API_* credentials or wrong POLY_FUNDER/POLY_SIGNATURE_TYPE. "
+            "confirm the tradable Polymarket wallet target, set matching "
+            "POLY_FUNDER/POLY_SIGNATURE_TYPE, then re-run "
+            "scripts/derive_polymarket_keys.py so POLY_API_* matches that wallet. "
             f"Last errors: {' | '.join(failures)[:180]}"
         ),
     )
