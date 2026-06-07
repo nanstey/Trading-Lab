@@ -59,7 +59,7 @@ Clone the AlphaInsider / TradingView Trend Following Long Only Strategy as a new
 
 ## Venue fit
 - Primary venue: Hyperliquid perps.
-- First-pass candidate instruments: `BTC-PERP`, `ETH-PERP`.
+- First-pass candidate instrument: `BTC-PERP`.
 - Why not Polymarket: this is a directional crypto trend strategy, not a binary-market thesis.
 
 ## Implementation requirements
