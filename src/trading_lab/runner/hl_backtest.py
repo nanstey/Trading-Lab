@@ -532,7 +532,7 @@ def _per_trade_pnl_from_positions(positions_df: pd.DataFrame) -> list[float]:
 
 _BAR_FREQ: dict[str, str] = {
     "1m": "1min", "5m": "5min", "15m": "15min",
-    "1h": "1h", "4h": "4h", "1d": "1D",
+    "1h": "1h", "2h": "2h", "4h": "4h", "1d": "1D",
 }
 
 

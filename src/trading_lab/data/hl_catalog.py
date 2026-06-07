@@ -23,7 +23,7 @@ return pandas DataFrames keyed by UTC datetime, ready for the bar loader.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -131,7 +131,8 @@ class HyperliquidCatalog:
         end_ms = int(end.timestamp() * 1000)
         coin_dir = self._candles_dir / coin / interval
         if not coin_dir.exists():
-            return _empty_candle_df()
+            fallback = self._read_resampled_candles(coin, interval, start, end)
+            return fallback if fallback is not None else _empty_candle_df()
 
         frames: list[pd.DataFrame] = []
         for pf in sorted(coin_dir.rglob("data.parquet")):
@@ -141,7 +142,8 @@ class HyperliquidCatalog:
             if not df.empty:
                 frames.append(df)
         if not frames:
-            return _empty_candle_df()
+            fallback = self._read_resampled_candles(coin, interval, start, end)
+            return fallback if fallback is not None else _empty_candle_df()
         out = pd.concat(frames, ignore_index=True)
         out = out.drop_duplicates(subset=["ts_open_ms"]).sort_values("ts_open_ms")
         out["dt_open"] = pd.to_datetime(out["ts_open_ms"], unit="ms", utc=True)
@@ -285,6 +287,29 @@ class HyperliquidCatalog:
         combined = combined.drop_duplicates(subset=[key], keep="last")
         return combined.sort_values(key).reset_index(drop=True)
 
+    def _read_resampled_candles(
+        self,
+        coin: str,
+        interval: str,
+        start: datetime,
+        end: datetime,
+    ) -> pd.DataFrame | None:
+        if interval not in {"2h", "4h"}:
+            return None
+        bucket_hours = int(interval.removesuffix("h"))
+        source_start = _floor_to_hour_bucket(start, bucket_hours)
+        source = self.read_candles(coin, "1h", source_start, end)
+        if source.empty:
+            return None
+        return _resample_hourly_candles(
+            source,
+            coin=coin,
+            interval=interval,
+            bucket_hours=bucket_hours,
+            start=start,
+            end=end,
+        )
+
 
 def _candle_record(coin: str, interval: str, c: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -305,6 +330,68 @@ def _empty_candle_df() -> pd.DataFrame:
     return pd.DataFrame(
         columns=[f.name for f in CANDLES_SCHEMA] + ["dt_open", "dt_close"]
     )
+
+
+def _floor_to_hour_bucket(ts: datetime, bucket_hours: int) -> datetime:
+    ts = ts.astimezone(UTC)
+    return ts.replace(
+        hour=(ts.hour // bucket_hours) * bucket_hours,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+
+def _resample_hourly_candles(
+    source: pd.DataFrame,
+    *,
+    coin: str,
+    interval: str,
+    bucket_hours: int,
+    start: datetime,
+    end: datetime,
+) -> pd.DataFrame:
+    if source.empty:
+        return _empty_candle_df()
+    work = source.copy()
+    work["bucket_open"] = work["dt_open"].dt.floor(f"{bucket_hours}h")
+    grouped = work.groupby("bucket_open", sort=True, dropna=False)
+
+    rows: list[dict[str, Any]] = []
+    for bucket_open, part in grouped:
+        part = part.sort_values("ts_open_ms")
+        if len(part) != bucket_hours:
+            continue
+        expected_close_ms = int(bucket_open.timestamp() * 1000) + (bucket_hours * 3_600_000) - 1
+        if int(part.iloc[-1]["ts_close_ms"]) != expected_close_ms:
+            continue
+        rows.append(
+            {
+                "coin": coin,
+                "interval": interval,
+                "ts_open_ms": int(part.iloc[0]["ts_open_ms"]),
+                "ts_close_ms": int(part.iloc[-1]["ts_close_ms"]),
+                "open": float(part.iloc[0]["open"]),
+                "high": float(part["high"].max()),
+                "low": float(part["low"].min()),
+                "close": float(part.iloc[-1]["close"]),
+                "volume": float(part["volume"].sum()),
+                "n_trades": int(part["n_trades"].sum()),
+                "dt_open": bucket_open,
+                "dt_close": bucket_open + timedelta(hours=bucket_hours) - timedelta(milliseconds=1),
+            }
+        )
+
+    if not rows:
+        return _empty_candle_df()
+
+    out = pd.DataFrame.from_records(rows)
+    start_ms = int(start.timestamp() * 1000)
+    end_ms = int(end.timestamp() * 1000)
+    out = out[(out["ts_open_ms"] >= start_ms) & (out["ts_open_ms"] <= end_ms)]
+    if out.empty:
+        return _empty_candle_df()
+    return out.reset_index(drop=True)
 
 
 def _iso(ms: int) -> str:

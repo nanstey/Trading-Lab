@@ -46,7 +46,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     g.add_argument("--coin", help="Single coin (e.g. BTC).")
     g.add_argument("--hypothesis-slug", help="Load strategy + universe from a hypothesis MD.")
     g.add_argument("--coins", help="Comma list (e.g. BTC,ETH,SOL).")
-    p.add_argument("--bar-interval", default="1h", choices=["5m", "1h", "1d"])
+    p.add_argument("--bar-interval", default="1h", choices=["5m", "1h", "2h", "4h", "1d"])
     p.add_argument("--start", required=True, help="UTC YYYY-MM-DD (inclusive)")
     p.add_argument("--end", required=True, help="UTC YYYY-MM-DD (exclusive)")
     p.add_argument("--initial-capital-usdc", type=float, default=10_000.0)
@@ -69,11 +69,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _resolve_coins(args: argparse.Namespace, catalog: HyperliquidCatalog) -> list[str]:
+def _resolve_coins(
+    args: argparse.Namespace,
+    catalog: HyperliquidCatalog,
+    hyp_fm: dict[str, Any] | None = None,
+) -> list[str]:
     if args.coin:
         return [args.coin.upper()]
     if args.coins:
         return [c.strip().upper() for c in args.coins.split(",") if c.strip()]
+    market_criteria = hyp_fm.get("market_criteria", {}) if hyp_fm else {}
+    symbols = market_criteria.get("symbols") or []
+    if symbols:
+        return [str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()]
     # hypothesis path: load universe at --universe-as-of or --end
     as_of_raw = args.universe_as_of or args.end
     if hasattr(as_of_raw, "isoformat"):
@@ -105,9 +113,21 @@ def _resolve_strategy(args: argparse.Namespace, hyp_fm: dict[str, Any] | None) -
     }
 
 
-def _read_hypothesis(slug: str) -> dict[str, Any]:
-    """Parse research/hypotheses/<slug>.md frontmatter as a dict."""
-    path = Path("research/hypotheses") / f"{slug}.md"
+def _resolve_hypothesis_path(slug: str, *, hypotheses_dir: Path = Path("research/hypotheses")) -> Path:
+    candidates = [
+        hypotheses_dir / slug / "spec.md",
+        hypotheses_dir / slug / "dossier.md",
+        hypotheses_dir / f"{slug}.md",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    raise FileNotFoundError(f"hypothesis not found for slug={slug}")
+
+
+def _read_hypothesis(slug: str, *, hypotheses_dir: Path = Path("research/hypotheses")) -> dict[str, Any]:
+    """Parse hypothesis frontmatter from folder-style or legacy flat layout."""
+    path = _resolve_hypothesis_path(slug, hypotheses_dir=hypotheses_dir)
     text = path.read_text()
     if not text.startswith("---"):
         raise ValueError(f"hypothesis {slug} has no YAML frontmatter")
@@ -142,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.universe_as_of:
             args.universe_as_of = hyp_fm.get("universe_as_of", args.end)
 
-    coins = _resolve_coins(args, catalog)
+    coins = _resolve_coins(args, catalog, hyp_fm)
     strategy_kw = _resolve_strategy(args, hyp_fm)
 
     fees = HyperliquidFeeConfig()
