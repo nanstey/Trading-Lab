@@ -66,7 +66,7 @@ Clone the AlphaInsider / TradingView Ichimoku Kinko Hyo: ETH 3h Strategy as a ne
 
 ## Main risks
 - Direct TradingView extraction was blocked; provenance is strong but comes from a secondary public mirror.
-- `3h` support is not yet wired in the current runtime path.
+- The current first-pass implementation uses strict `1h -> 3h` resampling plus explicit conservative assumptions for the RSI/volatility helpers; those choices are honest but may still differ from the original Pine internals.
 - Hidden Pine defaults beyond the recovered values may still matter for parity.
 
 ## Acceptance criteria
