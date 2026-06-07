@@ -146,6 +146,42 @@ def test_read_candles_resample_skips_incomplete_2h_buckets(catalog: HyperliquidC
     assert df.iloc[0]["ts_open_ms"] == 1735696800000
 
 
+def test_read_candles_resamples_3h_from_hourly_when_native_partition_missing(catalog: HyperliquidCatalog):
+    bars = [_candle(1735689600000 + i * 3_600_000, close=100.0 + i) for i in range(9)]
+    catalog.write_candles("ETH", "1h", bars)
+
+    df = catalog.read_candles(
+        "ETH",
+        "3h",
+        datetime(2025, 1, 1, 0, tzinfo=UTC),
+        datetime(2025, 1, 1, 9, tzinfo=UTC),
+    )
+
+    assert len(df) == 3
+    assert df["interval"].tolist() == ["3h", "3h", "3h"]
+    first = df.iloc[0]
+    assert first["ts_open_ms"] == 1735689600000
+    assert first["close"] == 102.0
+    assert first["volume"] == pytest.approx(4.5)
+    assert first["n_trades"] == 150
+
+
+def test_read_candles_resample_skips_incomplete_3h_buckets(catalog: HyperliquidCatalog):
+    bars = [_candle(1735689600000 + i * 3_600_000, close=100.0 + i) for i in range(9)]
+    bars.pop(1)  # break the first 3h bucket
+    catalog.write_candles("ETH", "1h", bars)
+
+    df = catalog.read_candles(
+        "ETH",
+        "3h",
+        datetime(2025, 1, 1, 0, tzinfo=UTC),
+        datetime(2025, 1, 1, 9, tzinfo=UTC),
+    )
+
+    assert len(df) == 2
+    assert df.iloc[0]["ts_open_ms"] == 1735700400000
+
+
 def test_funding_round_trip(catalog: HyperliquidCatalog):
     entries = [
         {"time": 1735689600000 + i * 3_600_000,

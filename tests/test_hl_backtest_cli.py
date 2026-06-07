@@ -35,6 +35,20 @@ def test_parse_args_accepts_2h_interval() -> None:
     assert args.bar_interval == "2h"
 
 
+def test_parse_args_accepts_3h_interval() -> None:
+    args = _parse_args([
+        "--coin",
+        "BTC",
+        "--bar-interval",
+        "3h",
+        "--start",
+        "2026-05-01",
+        "--end",
+        "2026-06-01",
+    ])
+    assert args.bar_interval == "3h"
+
+
 def test_read_hypothesis_supports_folder_dossier_layout(tmp_path: Path) -> None:
     hypotheses_dir = tmp_path / "research" / "hypotheses"
     dossier = hypotheses_dir / "hl-supertrend-cloud" / "dossier.md"

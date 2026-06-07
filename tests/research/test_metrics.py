@@ -87,3 +87,8 @@ def test_combine_metrics_carries_through():
     assert pm.fees_paid == 2.0
     assert pm.total_return > 0
     assert "1h" in PERIODS_PER_YEAR_BY_INTERVAL
+
+
+def test_periods_per_year_supports_2h_and_3h() -> None:
+    assert PERIODS_PER_YEAR_BY_INTERVAL["2h"] == 365 * 12
+    assert PERIODS_PER_YEAR_BY_INTERVAL["3h"] == 365 * 8

@@ -38,6 +38,7 @@ _INTERVAL_SPEC: dict[str, tuple[int, BarAggregation]] = {
     "15m": (15, BarAggregation.MINUTE),
     "1h": (1, BarAggregation.HOUR),
     "2h": (2, BarAggregation.HOUR),
+    "3h": (3, BarAggregation.HOUR),
     "4h": (4, BarAggregation.HOUR),
     "1d": (1, BarAggregation.DAY),
 }

@@ -294,7 +294,7 @@ class HyperliquidCatalog:
         start: datetime,
         end: datetime,
     ) -> pd.DataFrame | None:
-        if interval not in {"2h", "4h"}:
+        if interval not in {"2h", "3h", "4h"}:
             return None
         bucket_hours = int(interval.removesuffix("h"))
         source_start = _floor_to_hour_bucket(start, bucket_hours)

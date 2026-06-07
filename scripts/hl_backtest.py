@@ -46,7 +46,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     g.add_argument("--coin", help="Single coin (e.g. BTC).")
     g.add_argument("--hypothesis-slug", help="Load strategy + universe from a hypothesis MD.")
     g.add_argument("--coins", help="Comma list (e.g. BTC,ETH,SOL).")
-    p.add_argument("--bar-interval", default="1h", choices=["5m", "1h", "2h", "4h", "1d"])
+    p.add_argument("--bar-interval", default="1h", choices=["5m", "1h", "2h", "3h", "4h", "1d"])
     p.add_argument("--start", required=True, help="UTC YYYY-MM-DD (inclusive)")
     p.add_argument("--end", required=True, help="UTC YYYY-MM-DD (exclusive)")
     p.add_argument("--initial-capital-usdc", type=float, default=10_000.0)
