@@ -72,3 +72,6 @@ Clone the AlphaInsider / TradingView LunaOwl PriceChannel strategy as a new Hype
 - Smoke validation passes on the actual module chosen for implementation.
 - Bounded Hyperliquid backtest produces durable artifacts and explicitly reports the impact of stop-fill assumptions, fees, and funding.
 - Research verdict states whether the strategy remains credible after honest breakout execution assumptions.
+
+## Parameter space
+- `channel_length`: [14, 21, 28, 35]

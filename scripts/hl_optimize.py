@@ -88,11 +88,21 @@ log = logging.getLogger("hl_optimize")
 # ---------------------------------------------------------------------------
 
 
+def _resolve_hypothesis_path(slug: str, hypotheses_dir: Path) -> Path:
+    candidates = [
+        hypotheses_dir / slug / "spec.md",
+        hypotheses_dir / slug / "dossier.md",
+        hypotheses_dir / f"{slug}.md",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    raise FileNotFoundError(f"hypothesis missing for slug={slug} under {hypotheses_dir}")
+
+
 def parse_hypothesis(slug: str, hypotheses_dir: Path) -> tuple[dict[str, Any], str]:
     """Return (frontmatter, body)."""
-    md_path = hypotheses_dir / f"{slug}.md"
-    if not md_path.exists():
-        raise FileNotFoundError(f"hypothesis missing: {md_path}")
+    md_path = _resolve_hypothesis_path(slug, hypotheses_dir)
     text = md_path.read_text()
     if not text.startswith("---"):
         raise ValueError(f"hypothesis {slug} missing frontmatter")
@@ -142,6 +152,14 @@ def parse_param_space(body: str) -> dict[str, list[float]]:
         if values:
             space[name] = values
     return space
+
+
+def resolve_coins(fm: dict[str, Any], universe: list[Any]) -> list[str]:
+    market_criteria = fm.get("market_criteria") or {}
+    raw_symbols = market_criteria.get("symbols") or []
+    if raw_symbols:
+        return [str(symbol).upper() for symbol in raw_symbols]
+    return coin_names(universe)
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     tiers = fm.get("universe_tiers")
     universe = filter_by_tier(universe, tiers)
-    coins = coin_names(universe)
+    coins = resolve_coins(fm, universe)
     if args.max_coins > 0:
         coins = coins[: args.max_coins]
     log.info("universe: %d coins (%s)", len(coins), coins)

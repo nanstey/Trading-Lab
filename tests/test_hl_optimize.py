@@ -63,3 +63,35 @@ def test_config_methodology_rejects_negative_expectancy() -> None:
     assert category == "unprofitable"
     assert methodology["sample_quality"]["gates"]["positive_expectancy"] is False
     assert score < 2_000_000
+
+
+def test_parse_hypothesis_supports_folder_dossier_layout(tmp_path: Path) -> None:
+    hypotheses_dir = tmp_path / "research" / "hypotheses"
+    dossier = hypotheses_dir / "hl-lunaowl-pricechannel" / "dossier.md"
+    dossier.parent.mkdir(parents=True)
+    dossier.write_text(
+        "---\n"
+        "slug: hl-lunaowl-pricechannel\n"
+        "strategy_module: trading_lab.strategies.hl_lunaowl_pricechannel\n"
+        "strategy_class: HLLunaOwlPriceChannelStrategy\n"
+        "market_criteria:\n"
+        "  symbols: [BTC, ETH]\n"
+        "---\n\n"
+        "## Parameter space\n"
+        "- channel_length: [14, 21, 28]\n"
+    )
+
+    frontmatter, body = hl_optimize.parse_hypothesis("hl-lunaowl-pricechannel", hypotheses_dir)
+
+    assert frontmatter["strategy_module"] == "trading_lab.strategies.hl_lunaowl_pricechannel"
+    assert frontmatter["market_criteria"]["symbols"] == ["BTC", "ETH"]
+    assert hl_optimize.parse_param_space(body) == {"channel_length": [14, 21, 28]}
+
+
+def test_resolve_coins_prefers_hypothesis_symbols() -> None:
+    coins = hl_optimize.resolve_coins(
+        {"market_criteria": {"symbols": ["btc", "ETH"]}},
+        universe=[],
+    )
+
+    assert coins == ["BTC", "ETH"]
