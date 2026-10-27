@@ -72,6 +72,7 @@ data/raw/
 data/parquet/*
 !data/parquet/.gitkeep
 data/market_catalog.db
+data/trader_cache/
 data/.kill_switch
 data/cron_auditor_state.json
 *.parquet
@@ -88,6 +89,7 @@ research/captures/
 research/link_dropbox/
 research/budget.json
 research/logs/
+research/trader_profiles/
 
 # Docker
 docker-compose.override.yml
